@@ -143,55 +143,56 @@ def train():
 
     # 11. Convert to ONNX and push
     print("Converting fine-tuned model to ONNX format...")
-    try:
-        # For ONNX export, it's usually better to merge LoRA weights first if possible,
-        # or load the model with adapters applied.
-        # Optimum might handle PEFT models directly. Let's try loading from hub
-        # ensuring the read token (or write token if it has read access) is available.
-        
-        # If HF_HUB_TOKEN_READ is different and needed for private repo
-        # login(token=HF_HUB_TOKEN_READ, add_to_git_credential=False)
+    # try:
+    # For ONNX export, it's usually better to merge LoRA weights first if possible,
+    # or load the model with adapters applied.
+    # Optimum might handle PEFT models directly. Let's try loading from hub
+    # ensuring the read token (or write token if it has read access) is available.
+    
+    # If HF_HUB_TOKEN_READ is different and needed for private repo
+    # login(token=HF_HUB_TOKEN_READ, add_to_git_credential=False)
 
-        # Reload the model with adapters merged for ONNX export if necessary
-        # This step depends on how `optimum` handles PEFT models.
-        # If it can take the `peft_model` directly or `HF_MODEL_ID` (which now contains adapters):
-        
-        onnx_model_path = os.path.join(LOCAL_ONNX_MODEL_PATH, HF_MODEL_ID.split('/')[-1] + "_onnx")
-        os.makedirs(onnx_model_path, exist_ok=True)
+    # Reload the model with adapters merged for ONNX export if necessary
+    # This step depends on how `optimum` handles PEFT models.
+    # If it can take the `peft_model` directly or `HF_MODEL_ID` (which now contains adapters):
+    
+    onnx_model_path = os.path.join(LOCAL_ONNX_MODEL_PATH, HF_MODEL_ID.split('/')[-1] + "_onnx")
+    os.makedirs(onnx_model_path, exist_ok=True)
 
-        print(f"Exporting model from {HF_MODEL_ID} (with adapters) to ONNX...")
-        # The from_pretrained here will load the base model and automatically apply
-        # adapters if they are found in the repo (which they are, pushed by the trainer)
-        ort_model = ORTModelForSeq2SeqLM.from_pretrained(
-            HF_MODEL_ID, # This should point to the repo with adapters
-            export=True,
-            token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE, # Use read or write token,
-            library_name="transformers",
-            # provider="CUDAExecutionProvider", # Uncomment if you have GPU for ONNX and want to specify
-        )
-        ort_model.save_pretrained(onnx_model_path)
-        tokenizer.save_pretrained(onnx_model_path) # Save tokenizer with ONNX model for consistency
+    print(f"Exporting model from {HF_MODEL_ID} (with adapters) to ONNX...")
+    # The from_pretrained here will load the base model and automatically apply
+    # adapters if they are found in the repo (which they are, pushed by the trainer)
+    ort_model = ORTModelForSeq2SeqLM.from_pretrained(
+        HF_MODEL_ID, # This should point to the repo with adapters
+        export=True,
+        # token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE, # Use read or write token,
+        token=HF_HUB_TOKEN_WRITE, # Use read or write token,
+        library_name="transformers",
+        # provider="CUDAExecutionProvider", # Uncomment if you have GPU for ONNX and want to specify
+    )
+    ort_model.save_pretrained(onnx_model_path)
+    tokenizer.save_pretrained(onnx_model_path) # Save tokenizer with ONNX model for consistency
 
-        print(f"ONNX model saved locally to: {onnx_model_path}")
+    print(f"ONNX model saved locally to: {onnx_model_path}")
 
-        print("Uploading ONNX model to Hugging Face Hub...")
-        api.upload_folder(
-            folder_path=onnx_model_path,
-            path_in_repo="onnx", # Store ONNX model in 'onnx' subfolder on the Hub
-            repo_id=HF_MODEL_ID,
-            repo_type="model",
-            token=HF_HUB_TOKEN_WRITE,
-            commit_message="Add ONNX version of the model"
-        )
-        print(f"ONNX model uploaded to {HF_MODEL_ID}/onnx on the Hub.")
+    print("Uploading ONNX model to Hugging Face Hub...")
+    api.upload_folder(
+        folder_path=onnx_model_path,
+        path_in_repo="onnx", # Store ONNX model in 'onnx' subfolder on the Hub
+        repo_id=HF_MODEL_ID,
+        repo_type="model",
+        token=HF_HUB_TOKEN_WRITE,
+        commit_message="Add ONNX version of the model"
+    )
+    print(f"ONNX model uploaded to {HF_MODEL_ID}/onnx on the Hub.")
 
-        # Clean up local ONNX model folder
-        if os.path.exists(LOCAL_ONNX_MODEL_PATH):
-            shutil.rmtree(LOCAL_ONNX_MODEL_PATH)
+    # Clean up local ONNX model folder
+    if os.path.exists(LOCAL_ONNX_MODEL_PATH):
+        shutil.rmtree(LOCAL_ONNX_MODEL_PATH)
 
-    except Exception as e:
-        print(f"Error during ONNX conversion or upload: {e}")
-        print("Skipping ONNX part.")
+    # except Exception as e:
+    #     print(f"Error during ONNX conversion or upload: {e}")
+    #     print("Skipping ONNX part.")
 
     # Clean up training output directory
     if os.path.exists(OUTPUT_DIR):
