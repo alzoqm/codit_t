@@ -1,8 +1,22 @@
 import os
 from dotenv import load_dotenv
+from os import path
 
-load_dotenv()
+from google.colab import drive
+drive.mount('/content/drive')
 
+
+if os.path.exists("/content/drive/MyDrive/Colab_Notebooks/.env.txt"):
+  try:
+    os.rename("/content/drive/MyDrive/Colab_Notebooks/.env.txt", "/content/drive/MyDrive/Colab_Notebooks/.env")
+  except FileNotFoundError:
+    print("파일이 존재하지 않습니다.")
+    exit(1)
+  except OSError as e:
+    print(f"파일 이름 변경 중 오류 발생: {e}")
+    exit(1)
+
+load_dotenv("/content/drive/MyDrive/codit/.env", override=True)
 # Hugging Face Hub Configuration
 HF_HUB_TOKEN_WRITE = os.getenv("HF_HUB_TOKEN_WRITE")
 HF_HUB_TOKEN_READ = os.getenv("HF_HUB_TOKEN_READ") # Used by inference for downloading
