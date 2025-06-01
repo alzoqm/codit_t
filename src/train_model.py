@@ -167,7 +167,7 @@ def train():
         export=True,
         # token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE, # Use read or write token,
         token=HF_HUB_TOKEN_WRITE, # Use read or write token,
-        library="transformers",
+        from_transformers=True,
         # provider="CUDAExecutionProvider", # Uncomment if you have GPU for ONNX and want to specify
     )
     ort_model.save_pretrained(onnx_model_path)
