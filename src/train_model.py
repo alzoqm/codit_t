@@ -163,12 +163,10 @@ def train():
     # The from_pretrained here will load the base model and automatically apply
     # adapters if they are found in the repo (which they are, pushed by the trainer)
     ort_model = ORTModelForSeq2SeqLM.from_pretrained(
-        HF_MODEL_ID, # This should point to the repo with adapters
-        export=True,
-        # token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE, # Use read or write token,
-        token=HF_HUB_TOKEN_WRITE, # Use read or write token,
-        from_transformers=True,
-        # provider="CUDAExecutionProvider", # Uncomment if you have GPU for ONNX and want to specify
+        HF_MODEL_ID,
+        from_transformers=True,      # 동일 효과
+        provider="CUDAExecutionProvider",
+        token=HF_HUB_TOKEN_WRITE,
     )
     ort_model.save_pretrained(onnx_model_path)
     tokenizer.save_pretrained(onnx_model_path) # Save tokenizer with ONNX model for consistency
