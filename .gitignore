@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+#.env
+*.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Training artifacts
+results/
+peft_lora_adapters/
+onnx_model/
+
+# Docker
+docker-compose.yml
+
+# Data (if any local large files, though we aim to use HF Hub)
+data/
+*.parquet

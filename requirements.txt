@@ -1,0 +1,17 @@
+transformers[torch]>=4.38.0
+datasets>=2.16.0
+peft>=0.9.0
+bitsandbytes>=0.42.0
+accelerate>=0.27.0
+huggingface_hub>=0.20.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.0
+sacrebleu>=2.4.0
+onnx>=1.15.0
+onnxruntime>=1.16.0 # or onnxruntime-gpu if you have CUDA for ONNX inference
+optimum[onnxruntime]>=1.16.0
+requests>=2.31.0
+sentencepiece # often a dependency for tokenizers
