@@ -2,18 +2,17 @@ import time
 import requests
 import json
 import torch
-import os # For os.path.join
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import os
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig
 from peft import PeftModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
+from optimum.onnxruntime.utils import ONNXProvider # 수정: ONNXProvider 임포트 위치 변경 및 사용
 from sacrebleu.metrics import BLEU
-# from datasets import Dataset # Not used directly in this version of the file
 from tqdm import tqdm
-from huggingface_hub import snapshot_download # Moved import to top
+from huggingface_hub import snapshot_download
 
 from src.config import (
     BASE_MODEL_ID,
-    HF_MODEL_ID, # Used as a default or fallback, specific repo_ids passed as args
     HF_HUB_TOKEN_READ,
     PAPAGO_CLIENT_ID,
     PAPAGO_CLIENT_SECRET
@@ -28,68 +27,99 @@ def get_hf_model_and_tokenizer(
     tokenizer_subfolder: str = None,
     token: str = None,
     is_peft_adapter: bool = False,
-    base_model_for_peft_id: str = BASE_MODEL_ID, # Default from config
+    base_model_for_peft_id: str = BASE_MODEL_ID,
     device="cuda" if torch.cuda.is_available() else "cpu"
 ):
     """
     Loads a Hugging Face model and tokenizer.
-    - repo_id: Main repository ID for the model (e.g., "Helsinki-NLP/opus-mt-ko-en" or "alzoqm/test_model_2").
-    - model_subfolder: Subfolder for model files within repo_id (e.g., "merged", or "peft_lora" if is_peft_adapter).
-    - tokenizer_repo_id: Repo ID for tokenizer. Defaults to repo_id.
-    - tokenizer_subfolder: Subfolder for tokenizer. Defaults to model_subfolder.
-    - is_peft_adapter: If True, loads repo_id/model_subfolder as PEFT adapters onto base_model_for_peft_id.
+    Handles None for subfolders correctly for from_pretrained.
     """
     actual_tokenizer_repo_id = tokenizer_repo_id if tokenizer_repo_id else repo_id
-    # If tokenizer_subfolder is explicitly None, it means root. If not given (is None by default), it mirrors model_subfolder.
-    actual_tokenizer_subfolder = tokenizer_subfolder if tokenizer_subfolder is not None else model_subfolder
+    
+    # Prepare kwargs for tokenizer loading, handling None subfolder
+    tokenizer_load_kwargs = {"token": token}
+    if tokenizer_subfolder: # Only add subfolder if it's not None or empty
+        tokenizer_load_kwargs["subfolder"] = tokenizer_subfolder
+    
+    print(f"Loading tokenizer from repo: {actual_tokenizer_repo_id}, args: {tokenizer_load_kwargs}")
+    tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_repo_id, **tokenizer_load_kwargs)
 
-    print(f"Loading tokenizer from repo: {actual_tokenizer_repo_id}, subfolder: {actual_tokenizer_subfolder or 'root'}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        actual_tokenizer_repo_id,
-        subfolder=actual_tokenizer_subfolder,
-        token=token
-    )
-
-    print(f"Loading model from repo: {repo_id}, subfolder: {model_subfolder or 'root'}")
     if is_peft_adapter:
         print(f"Loading base model for PEFT: {base_model_for_peft_id}")
+        # For PEFT, base model config should be loaded from base_model_for_peft_id
+        base_config_kwargs = {"token": token}
+        base_model_config = AutoConfig.from_pretrained(base_model_for_peft_id, **base_config_kwargs)
+
         base_model = AutoModelForSeq2SeqLM.from_pretrained(
             base_model_for_peft_id,
+            config=base_model_config,
             token=token,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
-            device_map={"": device} # Ensure base model is on the correct device
-        ) # .to(device) might be redundant if device_map is used effectively
-        print(f"Loading PEFT adapter from repo: {repo_id}, subfolder: {model_subfolder}")
-        model = PeftModel.from_pretrained(
-            base_model,
-            repo_id, # This is the repo where adapters are stored
-            subfolder=model_subfolder, # This is the subfolder name like "peft_lora"
-            token=token,
-            device_map={"": device} # Try to map PEFT model to device too
+            device_map={"": device}
         )
-        # model = model.merge_and_unload() # Optional: merge for faster inference
-        # print("PEFT model loaded and merged (if merge_and_unload is called).")
+        
+        peft_model_load_path = repo_id # Adapters are in this repo
+        peft_kwargs = {"token": token, "device_map": {"": device}}
+        if model_subfolder: # If adapters are in a subfolder of 'repo_id'
+            peft_kwargs["subfolder"] = model_subfolder
+        
+        print(f"Loading PEFT adapter from repo: {peft_model_load_path}, args: {peft_kwargs}")
+        model = PeftModel.from_pretrained(base_model, peft_model_load_path, **peft_kwargs)
+        # model = model.merge_and_unload() # Optional: for faster inference
         print("PEFT model loaded.")
     else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            repo_id,
-            subfolder=model_subfolder,
-            token=token,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-            device_map={"": device} # Map model to device
-        ) # .to(device)
+        # Standard model loading (e.g., base model or fully merged fine-tuned model)
+        config_load_kwargs = {"token": token}
+        if model_subfolder:
+            config_load_kwargs["subfolder"] = model_subfolder
+
+        print(f"Loading config from repo: {repo_id}, args: {config_load_kwargs}")
+        try:
+            # Try to load config from the specified model path (could be a subfolder)
+            model_config = AutoConfig.from_pretrained(repo_id, **config_load_kwargs)
+            # Ensure model_type is present, especially for Marian models from Helsinki-NLP
+            if not hasattr(model_config, 'model_type') or not model_config.model_type:
+                if "helsinki-nlp" in repo_id.lower() and (not model_subfolder or model_subfolder == ""): # Base Helsinki model
+                    print(f"Manually setting model_type to 'marian' for base Helsinki-NLP model: {repo_id}")
+                    model_config.model_type = "marian"
+                elif model_subfolder == "merged": # Specific check for our merged models
+                     print(f"Warning: Config from {repo_id}/{model_subfolder} is missing model_type. Assuming 'marian' if base was Helsinki.")
+                     # This might need to be set during the merge-and-save step in train.py
+                     # For now, we can try to proceed or explicitly set it if we know the base type.
+                     # If BASE_MODEL_ID is Helsinki, assume merged is also marian
+                     if "helsinki-nlp" in BASE_MODEL_ID.lower():
+                         model_config.model_type = "marian"
+
+
+        except Exception as e_conf:
+            print(f"Could not load config explicitly from {repo_id} with args {config_load_kwargs}. Error: {e_conf}")
+            print("Proceeding to load model, allowing AutoModelForSeq2SeqLM to infer/load config.")
+            model_config = None # Let from_pretrained handle config loading
+
+        model_load_kwargs = {
+            "token": token,
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+            "device_map": {"": device}
+        }
+        if model_subfolder:
+            model_load_kwargs["subfolder"] = model_subfolder
+        if model_config: # Pass the explicitly loaded config if available and valid
+             model_load_kwargs["config"] = model_config
+        
+        print(f"Loading standard model from repo: {repo_id}, args: {model_load_kwargs}")
+        model = AutoModelForSeq2SeqLM.from_pretrained(repo_id, **model_load_kwargs)
         print("Standard model loaded.")
     
     model.eval()
     return model, tokenizer
 
-def translate_texts_hf(texts, model, tokenizer, batch_size=16, max_length=128, device="cuda" if torch.cuda.is_available() else "cpu"):
+def translate_texts_hf(texts, model, tokenizer, batch_size=16, max_length=128, device=None):
     """Translates a list of texts using a Hugging Face model."""
     translations = []
-    # Model should already be on the correct device from get_hf_model_and_tokenizer
-    model_device = next(model.parameters()).device 
+    # Determine device from model if not specified
+    model_device = device if device else next(model.parameters()).device
     print(f"Translating {len(texts)} texts using Hugging Face model on {model_device} with batch size {batch_size}...")
     for i in tqdm(range(0, len(texts), batch_size)):
         batch_texts = texts[i:i+batch_size]
@@ -105,75 +135,89 @@ def translate_texts_hf(texts, model, tokenizer, batch_size=16, max_length=128, d
 def get_onnx_model_and_tokenizer(
     model_repo_id: str,
     onnx_model_subfolder: str,
-    tokenizer_base_repo_id: str = None, # Defaults to model_repo_id
+    tokenizer_base_repo_id: str = None,
     token: str = None,
-    provider: str = "CPUExecutionProvider"
+    preferred_provider: str = "CPUExecutionProvider"
 ):
     """Loads an ONNX model and tokenizer from Hugging Face Hub."""
     actual_tokenizer_base_repo_id = tokenizer_base_repo_id if tokenizer_base_repo_id else model_repo_id
     tokenizer = None
+    tokenizer_load_paths_tried = []
 
-    # Attempt 1: Tokenizer from ONNX model's own subfolder
-    print(f"Attempt 1: Loading ONNX tokenizer from repo: {actual_tokenizer_base_repo_id}, subfolder: {onnx_model_subfolder}")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_base_repo_id, subfolder=onnx_model_subfolder, token=token)
-        print(f"Loaded tokenizer from ONNX subfolder: {actual_tokenizer_base_repo_id}/{onnx_model_subfolder}")
-    except Exception as e1:
-        print(f"Tokenizer not found in {actual_tokenizer_base_repo_id}/{onnx_model_subfolder} (Error: {e1}).")
-        # Attempt 2: Tokenizer from "merged" subfolder in the same repo
-        print(f"Attempt 2: Loading tokenizer from repo: {actual_tokenizer_base_repo_id}, subfolder: merged")
+    def _try_load_tokenizer(repo_id_to_try, subfolder_name=None):
+        nonlocal tokenizer
+        nonlocal tokenizer_load_paths_tried
+        path_key = f"{repo_id_to_try}" + (f"/{subfolder_name}" if subfolder_name else "/(root)")
+        if path_key in tokenizer_load_paths_tried: return False
+        tokenizer_load_paths_tried.append(path_key)
+
+        load_kwargs = {"token": token}
+        if subfolder_name: # Only add if not None or empty
+            load_kwargs["subfolder"] = subfolder_name
+        
+        print(f"Attempting to load tokenizer from repo: {repo_id_to_try}, args: {load_kwargs}")
         try:
-            tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_base_repo_id, subfolder="merged", token=token)
-            print(f"Loaded tokenizer from merged subfolder: {actual_tokenizer_base_repo_id}/merged")
-        except Exception as e2:
-            print(f"Tokenizer not found in {actual_tokenizer_base_repo_id}/merged (Error: {e2}).")
-            # Attempt 3: Tokenizer from the root of the actual_tokenizer_base_repo_id
-            print(f"Attempt 3: Loading tokenizer from repo: {actual_tokenizer_base_repo_id} (root)")
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_base_repo_id, token=token)
-                print(f"Loaded tokenizer from root of: {actual_tokenizer_base_repo_id}")
-            except Exception as e3:
-                print(f"Tokenizer not found in root of {actual_tokenizer_base_repo_id} (Error: {e3}).")
-                # Attempt 4: Fallback to BASE_MODEL_ID's tokenizer
-                print(f"Attempt 4: Falling back to tokenizer from BASE_MODEL_ID: {BASE_MODEL_ID}")
-                try:
-                    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=token)
-                    print(f"Loaded tokenizer from BASE_MODEL_ID: {BASE_MODEL_ID}")
-                except Exception as e4:
-                    raise RuntimeError(f"All attempts to load tokenizer failed. Last error (BASE_MODEL_ID): {e4}")
+            tokenizer = AutoTokenizer.from_pretrained(repo_id_to_try, **load_kwargs)
+            print(f"Successfully loaded tokenizer from: {path_key}")
+            return True
+        except Exception as e:
+            print(f"Failed to load tokenizer from {path_key}. Error: {e}")
+            return False
+
+    # Try loading tokenizer from various locations
+    if not _try_load_tokenizer(actual_tokenizer_base_repo_id, onnx_model_subfolder):
+        if not _try_load_tokenizer(actual_tokenizer_base_repo_id, "merged"):
+            if not _try_load_tokenizer(actual_tokenizer_base_repo_id): # Root of actual_tokenizer_base_repo_id
+                 if not _try_load_tokenizer(BASE_MODEL_ID): # Fallback to global BASE_MODEL_ID
+                    raise RuntimeError(f"All attempts to load tokenizer failed. Tried: {tokenizer_load_paths_tried}")
     
     if tokenizer is None:
         raise RuntimeError("Critical: Could not load tokenizer after multiple attempts.")
 
-    print(f"Loading ONNX model from Hugging Face Hub repo: {model_repo_id}, subfolder: {onnx_model_subfolder}, provider: {provider}")
+    available_providers = ONNXProvider.get_available_providers()
+    print(f"Available ONNX Execution Providers: {available_providers}")
     
-    onnx_files_pattern = f"{onnx_model_subfolder}/*"
-    print(f"Downloading files from repo '{model_repo_id}' matching pattern '{onnx_files_pattern}'")
+    final_provider = preferred_provider
+    if preferred_provider not in available_providers:
+        print(f"Preferred ONNX provider '{preferred_provider}' is not available.")
+        if "CPUExecutionProvider" in available_providers:
+            print("Falling back to CPUExecutionProvider.")
+            final_provider = "CPUExecutionProvider"
+        elif available_providers: # If CPU is not there but others are (unlikely for general purpose)
+            final_provider = available_providers[0]
+            print(f"Falling back to first available provider: {final_provider}")
+        else: # No providers at all
+            raise RuntimeError("No ONNX Execution Providers available. Please install onnxruntime or onnxruntime-gpu.")
+    print(f"Using ONNX provider: {final_provider}")
+
+    print(f"Downloading ONNX model files from Hugging Face Hub repo: {model_repo_id}, subfolder: {onnx_model_subfolder}")
     
-    # snapshot_download downloads the repo and returns the path to the local cache of the whole repo.
-    # We then need to point to the subfolder within this downloaded cache.
-    downloaded_repo_cache_path = snapshot_download(
-        repo_id=model_repo_id,
-        # allow_patterns=[onnx_files_pattern], # This filters what's downloaded from the repo if it's a large repo
-        # For models saved with subfolders, often the config.json for ORTModel is expected at the level passed to from_pretrained
-        token=token,
-        repo_type="model"
-    )
+    # snapshot_download downloads the entire repo by default unless allow_patterns is very specific.
+    # The goal is to get the path to the subfolder containing the ONNX model.
+    download_kwargs = {"token": token, "repo_type": "model"}
+    # To optimize download, one might use allow_patterns for files inside the onnx_model_subfolder
+    # e.g., allow_patterns=[f"{onnx_model_subfolder}/*.onnx", f"{onnx_model_subfolder}/*.json"]
+    # However, if config.json for ORTModel is at the root of onnx_model_subfolder, that's fine.
+
+    downloaded_repo_cache_path = snapshot_download(repo_id=model_repo_id, **download_kwargs)
     
+    # Construct the full path to the subfolder containing the ONNX model files
     model_load_path = os.path.join(downloaded_repo_cache_path, onnx_model_subfolder)
 
-    if not os.path.exists(model_load_path) or not os.listdir(model_load_path):
-        raise FileNotFoundError(f"ONNX model files not found or directory empty at expected local path: {model_load_path}. "
-                                f"Check if subfolder '{onnx_model_subfolder}' exists in repo '{model_repo_id}' and was downloaded correctly.")
+    if not os.path.exists(model_load_path) or not os.path.isdir(model_load_path):
+         raise FileNotFoundError(f"ONNX model directory not found at expected local path: {model_load_path}. "
+                                 f"Ensure subfolder '{onnx_model_subfolder}' exists in repo '{model_repo_id}' and contains ONNX model files.")
+    if not os.listdir(model_load_path): # Check if directory is empty
+        raise FileNotFoundError(f"ONNX model directory '{model_load_path}' is empty. "
+                                f"Ensure ONNX files were correctly saved to and pushed to subfolder '{onnx_model_subfolder}' in repo '{model_repo_id}'.")
+
 
     print(f"Loading ONNX model from local snapshot directory: {model_load_path}")
     model = ORTModelForSeq2SeqLM.from_pretrained(
-        model_load_path, # This must be the directory containing model.onnx and config.json
-        provider=provider,
-        # use_io_binding=False # Consider if issues arise with specific providers/hardware
+        model_load_path, # This path must point to the directory containing .onnx files and relevant configs
+        provider=final_provider
     )
     print("ONNX model loaded.")
-    # model.eval() # ORT Models don't typically have an eval() method like PyTorch nn.Module
     return model, tokenizer
 
 def translate_texts_onnx(texts, model, tokenizer, batch_size=16, max_length=128):
@@ -183,8 +227,6 @@ def translate_texts_onnx(texts, model, tokenizer, batch_size=16, max_length=128)
     for i in tqdm(range(0, len(texts), batch_size)):
         batch_texts = texts[i:i+batch_size]
         inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
-        # For ONNX with CPUExecutionProvider, inputs remain on CPU.
-        # For CUDAExecutionProvider, Optimum handles moving data if model is on GPU.
         with torch.no_grad(): 
             generated_ids = model.generate(**inputs, max_length=max_length, num_beams=5, early_stopping=True)
         batch_translations = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
@@ -192,12 +234,10 @@ def translate_texts_onnx(texts, model, tokenizer, batch_size=16, max_length=128)
     return translations
 
 # --- Papago API Translation ---
-# (No changes to translate_texts_papago)
-def translate_texts_papago(texts, client_id, client_secret, batch_size=1): # Papago typically one by one
-    """Translates a list of texts using Papago API."""
+def translate_texts_papago(texts, client_id, client_secret, batch_size=1):
     if not client_id or not client_secret:
         print("Papago API credentials not found. Skipping Papago translation.")
-        return ["Papago API not configured."] * len(texts)
+        return ["[Papago API not configured.]" * len(texts) for _ in texts] # Corrected list comprehension
 
     url = "https://papago.apigw.ntruss.com/nmt/v1/translation"
     headers = {
@@ -222,8 +262,7 @@ def translate_texts_papago(texts, client_id, client_secret, batch_size=1): # Pap
                 translations.append(res_data["message"]["result"]["translatedText"])
             else:
                 print(f"Warning: Papago API response format unexpected for text: '{text_to_translate}'. Response: {res_data}")
-                translations.append(f"[Papago Error: Unexpected response format: {response.status_code}]")
-
+                translations.append(f"[Papago Error: Unexpected response format {response.status_code}]")
         except requests.exceptions.RequestException as e:
             print(f"Error during Papago API request for text '{text_to_translate}': {e}")
             translations.append(f"[Papago Error: {e}]")
@@ -231,170 +270,123 @@ def translate_texts_papago(texts, client_id, client_secret, batch_size=1): # Pap
             print(f"Error decoding Papago API JSON response for text '{text_to_translate}'. Status: {response.status_code}, Text: {response.text}")
             translations.append(f"[Papago Error: JSON decode error {response.status_code}]")
         time.sleep(0.1) 
-
     return translations
 
 # --- Evaluation Metrics ---
-# (No changes to calculate_bleu and measure_translation_speed)
 def calculate_bleu(hypotheses, references):
-    """
-    Calculates BLEU score.
-    :param hypotheses: A list of translated sentences.
-    :param references: A list of lists of reference sentences (or a list of single reference sentences).
-    """
-    if not hypotheses or not references:
-        return 0.0
-    if isinstance(references[0], str):
-        references = [[ref] for ref in references]
-
-    bleu = BLEU()
-    score = bleu.corpus_score(hypotheses, references)
+    if not hypotheses or not references: return 0.0
+    if isinstance(references[0], str): references = [[ref] for ref in references]
+    bleu_scorer = BLEU() # Renamed to avoid conflict with sacrebleu.BLEU
+    score = bleu_scorer.corpus_score(hypotheses, references)
     return score.score
 
-
 def measure_translation_speed(translation_function, model_data, texts, num_warmup=2, num_repeats=5, batch_size_override=None):
-    """
-    Measures translation speed.
-    """
-    if not texts:
-        return 0.0, 0.0
+    if not texts: return 0.0, 0.0
+    effective_batch_size = batch_size_override if batch_size_override is not None else (16 if model_data else 1)
 
-    # Warmup runs
-    print(f"Speed test: Warming up for {num_warmup} iterations...")
+    print(f"Speed test: Warming up for {num_warmup} iterations with batch size {effective_batch_size}...")
     for _ in range(num_warmup):
-        if model_data: # HF or ONNX
-            _ = translation_function(texts[:5], model_data[0], model_data[1], batch_size=batch_size_override or 16)
-        else: # Papago
-            _ = translation_function(texts[:1], PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET)
-
-    # Actual timing
-    start_times = []
-    print(f"Speed test: Running {num_repeats} timed iterations...")
-    for _ in tqdm(range(num_repeats)):
-        start_time = time.time()
         if model_data:
-            _ = translation_function(texts, model_data[0], model_data[1], batch_size=batch_size_override or len(texts))
+            _ = translation_function(texts[:min(5, len(texts))], model_data[0], model_data[1], batch_size=effective_batch_size)
+        else: # Papago
+            _ = translation_function(texts[:min(1, len(texts))], PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET) # Papago one by one
+    
+    start_times = []
+    print(f"Speed test: Running {num_repeats} timed iterations for {len(texts)} texts with batch size {effective_batch_size}...")
+    for rep_idx in tqdm(range(num_repeats)):
+        iter_start_time = time.time()
+        if model_data:
+            _ = translation_function(texts, model_data[0], model_data[1], batch_size=effective_batch_size)
         else:
             _ = translation_function(texts, PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET)
-        end_time = time.time()
-        start_times.append(end_time - start_time)
+        iter_end_time = time.time()
+        start_times.append(iter_end_time - iter_start_time)
 
-    avg_total_time = sum(start_times) / num_repeats
+    avg_total_time = sum(start_times) / num_repeats if num_repeats > 0 else 0
     avg_time_per_text = avg_total_time / len(texts) if texts else 0
-
+    
     print(f"Average total time for {len(texts)} texts over {num_repeats} runs: {avg_total_time:.4f} seconds.")
     print(f"Average time per text: {avg_time_per_text:.6f} seconds.")
     return avg_total_time, avg_time_per_text
 
 if __name__ == '__main__':
-    # Example Usage (Illustrative - requires .env setup and logged in to Hugging Face)
     print("Running translation_utils.py example...")
+    # Ensure .env is loaded for HF_HUB_TOKEN_READ, PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET
+    # HF_MODEL_ID should also be available from config or environment for these examples
     
     sample_ko_texts = [
         "안녕하세요, 오늘 날씨가 정말 좋네요.",
-        "이것은 번역 모델을 테스트하기 위한 샘플 문장입니다.",
-        "허깅페이스 트랜스포머 라이브러리는 매우 유용합니다."
+        "이것은 번역 모델을 테스트하기 위한 샘플 문장입니다."
     ]
     sample_en_refs = [
         ["Hello, the weather is really nice today."],
-        ["This is a sample sentence for testing the translation model."],
-        ["The Hugging Face Transformers library is very useful."]
+        ["This is a sample sentence for testing the translation model."]
     ]
     
-    # Ensure HF_MODEL_ID is set in your environment or src.config for the example to run fully
-    # For example: export HF_MODEL_ID="your_namespace/your_model_id"
-    configured_hf_model_id = HF_MODEL_ID or "alzoqm/test_model_2" # Fallback for example if not in env
+    # For example, HF_MODEL_ID needs to be configured (e.g., from src.config or os.getenv)
+    # Fallback for testing if not set in environment for this direct script run
+    configured_hf_model_id = os.getenv("HF_MODEL_ID", "alzoqm/test_model_2") 
+    print(f"Using HF_MODEL_ID for examples: {configured_hf_model_id}")
 
-    # 2. Test Base Model Translation
-    print("\n--- Testing Base Model (Helsinki-NLP/opus-mt-ko-en) ---")
+    # Test Base Model
+    print(f"\n--- Testing Base Model ({BASE_MODEL_ID}) ---")
     try:
-        # For base model, repo_id is BASE_MODEL_ID, no subfolder
-        base_model, base_tokenizer = get_hf_model_and_tokenizer(
-            repo_id=BASE_MODEL_ID, 
-            token=HF_HUB_TOKEN_READ
-        )
-        base_translations = translate_texts_hf(sample_ko_texts, base_model, base_tokenizer, batch_size=2)
-        print("Base Model Translations:", base_translations)
-        if base_translations and sample_en_refs:
-             base_bleu = calculate_bleu(base_translations, sample_en_refs)
-             print(f"Base Model BLEU: {base_bleu:.2f}")
-        
-        avg_total_time, avg_time_per_text = measure_translation_speed(
-            translate_texts_hf, (base_model, base_tokenizer), sample_ko_texts * 10,
-            num_warmup=1, num_repeats=2, batch_size_override=4
-        )
-        print(f"Base Model - Avg Total Time ({len(sample_ko_texts*10)} texts): {avg_total_time:.4f}s, Avg Time/Text: {avg_time_per_text:.6f}s")
-        del base_model, base_tokenizer
+        base_m, base_t = get_hf_model_and_tokenizer(repo_id=BASE_MODEL_ID, token=HF_HUB_TOKEN_READ)
+        base_trans = translate_texts_hf(sample_ko_texts, base_m, base_t)
+        print("Base Translations:", base_trans)
+        if base_trans: print(f"Base BLEU: {calculate_bleu(base_trans, sample_en_refs):.2f}")
+        del base_m, base_t
         if torch.cuda.is_available(): torch.cuda.empty_cache()
-    except Exception as e:
-        print(f"Error testing base model: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception as e: print(f"Error (Base Model): {e}\n{traceback.format_exc()}")
 
-    # 3. Test Fine-tuned Model (Merged version from Hub)
-    print(f"\n--- Testing Fine-tuned Merged Model ({configured_hf_model_id}/merged) ---")
+    # Test Fine-tuned Merged Model
     if configured_hf_model_id:
+        print(f"\n--- Testing Fine-tuned Merged Model ({configured_hf_model_id}/merged) ---")
         try:
-            ft_model, ft_tokenizer = get_hf_model_and_tokenizer(
-                repo_id=configured_hf_model_id,
-                model_subfolder="merged", # Specify the subfolder for model files
-                tokenizer_subfolder="merged", # Assuming tokenizer is also in "merged"
+            ft_m, ft_t = get_hf_model_and_tokenizer(
+                repo_id=configured_hf_model_id, 
+                model_subfolder="merged", 
+                tokenizer_subfolder="merged", # Assuming tokenizer files are also in 'merged'
                 token=HF_HUB_TOKEN_READ
             )
-            ft_translations = translate_texts_hf(sample_ko_texts, ft_model, ft_tokenizer, batch_size=2)
-            print("Fine-tuned Merged Model Translations:", ft_translations)
-            if ft_translations and sample_en_refs:
-                ft_bleu = calculate_bleu(ft_translations, sample_en_refs)
-                print(f"Fine-tuned Merged Model BLEU: {ft_bleu:.2f}")
-
-            avg_total_time_ft, avg_time_per_text_ft = measure_translation_speed(
-                translate_texts_hf, (ft_model, ft_tokenizer), sample_ko_texts * 10,
-                num_warmup=1, num_repeats=2, batch_size_override=4
-            )
-            print(f"Finetuned Model - Avg Total Time ({len(sample_ko_texts*10)} texts): {avg_total_time_ft:.4f}s, Avg Time/Text: {avg_time_per_text_ft:.6f}s")
-            del ft_model, ft_tokenizer
+            ft_trans = translate_texts_hf(sample_ko_texts, ft_m, ft_t)
+            print("FT Merged Translations:", ft_trans)
+            if ft_trans: print(f"FT Merged BLEU: {calculate_bleu(ft_trans, sample_en_refs):.2f}")
+            del ft_m, ft_t
             if torch.cuda.is_available(): torch.cuda.empty_cache()
-        except Exception as e:
-            print(f"Error testing fine-tuned merged model from {configured_hf_model_id}/merged: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("HF_MODEL_ID not set in config. Skipping fine-tuned merged model test.")
+        except Exception as e: print(f"Error (FT Merged Model): {e}\n{traceback.format_exc()}")
+    else: print("HF_MODEL_ID not configured, skipping FT Merged model test.")
 
-    # 4. Test ONNX Model (from Hub)
-    print(f"\n--- Testing ONNX Model ({configured_hf_model_id}/onnx_merged) ---")
+    # Test ONNX Model
     if configured_hf_model_id:
+        print(f"\n--- Testing ONNX Model ({configured_hf_model_id}/onnx_merged) ---")
         try:
-            onnx_provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
-            print(f"Using ONNX provider: {onnx_provider}")
-            
-            onnx_model, onnx_tokenizer = get_onnx_model_and_tokenizer(
+            onnx_pref_provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
+            print(f"Attempting ONNX with preferred provider: {onnx_pref_provider}")
+            onnx_m, onnx_t = get_onnx_model_and_tokenizer(
                 model_repo_id=configured_hf_model_id,
-                onnx_model_subfolder="onnx_merged", # Specify the subfolder for ONNX files
-                # tokenizer_base_repo_id will default to model_repo_id
+                onnx_model_subfolder="onnx_merged",
                 token=HF_HUB_TOKEN_READ,
-                provider=onnx_provider
+                preferred_provider=onnx_pref_provider
             )
-            onnx_translations = translate_texts_onnx(sample_ko_texts, onnx_model, onnx_tokenizer, batch_size=2)
-            print("ONNX Model Translations:", onnx_translations)
-            if onnx_translations and sample_en_refs:
-                onnx_bleu = calculate_bleu(onnx_translations, sample_en_refs)
-                print(f"ONNX Model BLEU: {onnx_bleu:.2f}")
+            print(f"ONNX model loaded with provider(s): {onnx_m.providers}")
+            onnx_trans = translate_texts_onnx(sample_ko_texts, onnx_m, onnx_t)
+            print("ONNX Translations:", onnx_trans)
+            if onnx_trans: print(f"ONNX BLEU: {calculate_bleu(onnx_trans, sample_en_refs):.2f}")
+            del onnx_m, onnx_t
+        except Exception as e: print(f"Error (ONNX Model): {e}\n{traceback.format_exc()}")
+    else: print("HF_MODEL_ID not configured, skipping ONNX model test.")
 
-            avg_total_time_onnx, avg_time_per_text_onnx = measure_translation_speed(
-                translate_texts_onnx, (onnx_model, onnx_tokenizer), sample_ko_texts * 10,
-                num_warmup=1, num_repeats=2, batch_size_override=4
-            )
-            print(f"ONNX Model - Avg Total Time ({len(sample_ko_texts*10)} texts): {avg_total_time_onnx:.4f}s, Avg Time/Text: {avg_time_per_text_onnx:.6f}s")
-            del onnx_model, onnx_tokenizer
-        except Exception as e:
-            print(f"Error testing ONNX model from {configured_hf_model_id}/onnx_merged: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("HF_MODEL_ID not set in config. Skipping ONNX model test.")
-
-    # 5. Test Papago Translation
-    # (This part remains the same)
-
+    # Test Papago
+    if PAPAGO_CLIENT_ID and PAPAGO_CLIENT_SECRET:
+        print("\n--- Testing Papago API ---")
+        try:
+            papago_trans = translate_texts_papago(sample_ko_texts, PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET)
+            print("Papago Translations:", papago_trans)
+            valid_papago_trans = [t for t in papago_trans if not t.startswith("[Papago Error")]
+            if valid_papago_trans and len(valid_papago_trans) == len(sample_en_refs):
+                 print(f"Papago BLEU: {calculate_bleu(valid_papago_trans, sample_en_refs):.2f}")
+        except Exception as e: print(f"Error (Papago): {e}\n{traceback.format_exc()}")
+    else: print("Papago credentials not set, skipping Papago test.")
+    
     print("\nTranslation utils example finished.")
