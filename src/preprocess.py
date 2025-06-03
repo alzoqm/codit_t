@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     # Example usage:
     try:
-        raw_datasets = load_pre_split_data(max_samples=MAX_SAMPLES_DATASET or 100) # test with 100 samples
+        raw_datasets = load_pre_split_data(max_samples_per_split=MAX_SAMPLES_DATASET or 100) # test with 100 samples
         tokenized_data, tokenizer_instance = tokenize_datasets(raw_datasets)
         
         print("\nTokenized train dataset features:")

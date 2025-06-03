@@ -35,7 +35,7 @@ def train():
     login(token=HF_HUB_TOKEN_WRITE)
 
     # 1. Load and preprocess data
-    raw_datasets = load_pre_split_data(max_samples=MAX_SAMPLES_DATASET)
+    raw_datasets = load_pre_split_data(max_samples_per_split=MAX_SAMPLES_DATASET)
     tokenized_datasets, tokenizer = tokenize_datasets(raw_datasets, BASE_MODEL_ID)
 
     # 2. Configure BitsAndBytes for qLoRA
