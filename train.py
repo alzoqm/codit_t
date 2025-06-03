@@ -233,7 +233,7 @@ def train():
         ort_model = ORTModelForSeq2SeqLM.from_pretrained(
             LOCAL_MERGED_MODEL_PATH, # Path to the saved merged model
             export=True,
-            # provider="CUDAExecutionProvider", # Uncomment and configure if you have GPU for ONNX
+            provider="CUDAExecutionProvider", # Uncomment and configure if you have GPU for ONNX
         )
         ort_model.save_pretrained(onnx_model_specific_path)
         # Tokenizer was already saved with merged_model, and from_pretrained for ORTModel uses the config
