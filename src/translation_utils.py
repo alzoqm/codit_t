@@ -110,10 +110,7 @@ def get_hf_model_and_tokenizer(
              model_load_kwargs["config"] = model_config
         
         print(f"Loading standard model from repo: {repo_id}, args: {model_load_kwargs}")
-        if model_subfolder is None:
-            model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, **model_load_kwargs)
-        else:
-            model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, device_map=device, torch_dtype=torch.float16,)
+        model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, **model_load_kwargs)
         print("Standard model loaded.")
     
     model.eval()
