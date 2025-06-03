@@ -67,13 +67,13 @@ def evaluate_models():
             device=pytorch_device
         )
         start_trans_base = time.time()
-        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=16, device=pytorch_device)
+        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=4, device=pytorch_device)
         time_trans_base = time.time() - start_trans_base
         base_bleu = calculate_bleu(base_translations, en_references)
         print(f"Base Model BLEU: {base_bleu:.4f}, Translation time: {time_trans_base:.2f}s")
 
         avg_total_time_b, avg_time_per_text_b = measure_translation_speed(
-            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=16
+            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=4
         )
         results.append({
             "Model": "Base (Pre-Finetuning)", "ID": BASE_MODEL_ID, "BLEU": f"{base_bleu:.4f}",
@@ -92,24 +92,24 @@ def evaluate_models():
     print(f"\n--- Evaluating Fine-tuned Merged Model: {merged_model_display_id} ---")
     if HF_MODEL_ID:
         try:
-            # ft_model, ft_tokenizer = get_hf_model_and_tokenizer(
-            #     repo_id=HF_MODEL_ID,          # Main repo ID
-            #     model_subfolder="merged",     # Subfolder for the merged model
-            #     # Tokenizer for merged should also be in "merged" or root of HF_MODEL_ID.
-            #     # translation_utils will try HF_MODEL_ID/merged first for tokenizer if tokenizer_subfolder="merged"
-            #     tokenizer_repo_id=HF_MODEL_ID, 
-            #     tokenizer_subfolder="merged",
-            #     token=HF_HUB_TOKEN_READ,
-            #     device=pytorch_device
-            # )
+            ft_model, ft_tokenizer = get_hf_model_and_tokenizer(
+                repo_id=HF_MODEL_ID,          # Main repo ID
+                model_subfolder="merged",     # Subfolder for the merged model
+                # Tokenizer for merged should also be in "merged" or root of HF_MODEL_ID.
+                # translation_utils will try HF_MODEL_ID/merged first for tokenizer if tokenizer_subfolder="merged"
+                tokenizer_repo_id=HF_MODEL_ID, 
+                tokenizer_subfolder="merged",
+                token=HF_HUB_TOKEN_READ,
+                device=pytorch_device
+            )
             start_trans_ft = time.time()
-            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=16, device=pytorch_device)
+            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=4, device=pytorch_device)
             time_trans_ft = time.time() - start_trans_ft
             ft_bleu = calculate_bleu(ft_translations, en_references)
             print(f"Fine-tuned Merged Model BLEU: {ft_bleu:.4f}, Translation time: {time_trans_ft:.2f}s")
 
             avg_total_time_ft, avg_time_per_text_ft = measure_translation_speed(
-                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=16
+                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=4
             )
             results.append({
                 "Model": "Fine-tuned (Merged)", "ID": merged_model_display_id, "BLEU": f"{ft_bleu:.4f}",
@@ -143,13 +143,13 @@ def evaluate_models():
             actual_onnx_provider_in_use = onnx_model.providers[0] if hasattr(onnx_model, 'providers') and onnx_model.providers else onnx_preferred_provider
             
             start_trans_onnx = time.time()
-            onnx_translations = translate_texts_onnx(ko_texts, onnx_model, onnx_tokenizer, batch_size=16)
+            onnx_translations = translate_texts_onnx(ko_texts, onnx_model, onnx_tokenizer, batch_size=4)
             time_trans_onnx = time.time() - start_trans_onnx
             onnx_bleu = calculate_bleu(onnx_translations, en_references)
             print(f"ONNX Model BLEU: {onnx_bleu:.4f}, Translation time: {time_trans_onnx:.2f}s (Using Provider: {actual_onnx_provider_in_use})")
             
             avg_total_time_onnx, avg_time_per_text_onnx = measure_translation_speed(
-                translate_texts_onnx, (onnx_model, onnx_tokenizer), speed_test_ko_texts, batch_size_override=16
+                translate_texts_onnx, (onnx_model, onnx_tokenizer), speed_test_ko_texts, batch_size_override=4
             )
             results.append({
                 "Model": "Fine-tuned (ONNX)", "ID": onnx_model_display_id, "BLEU": f"{onnx_bleu:.4f}",

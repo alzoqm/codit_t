@@ -217,7 +217,7 @@ def get_onnx_model_and_tokenizer(
     print(f"Loading ONNX model from local snapshot directory: {model_load_path}")
     model = ORTModelForSeq2SeqLM.from_pretrained(
         model_load_path, # This path must point to the directory containing .onnx files and relevant configs
-        provider=final_provider
+        provider=final_provider,
     )
     print("ONNX model loaded.")
     return model, tokenizer
