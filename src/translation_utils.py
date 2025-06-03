@@ -2,7 +2,8 @@ import time
 import requests
 import json
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, PeftModel
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from peft import PeftModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
 from sacrebleu.metrics import BLEU
 from datasets import Dataset
