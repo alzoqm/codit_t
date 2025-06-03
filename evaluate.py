@@ -33,7 +33,7 @@ def evaluate_models():
         dataset_dict = load_pre_split_data(
             train_path=None, # Don't load train for eval
             valid_path=None, # Don't load valid for eval
-            max_samples_per_split=MAX_SAMPLES_DATASET or 100 # Limit for faster evaluation, or None for full
+            max_samples_per_split=MAX_SAMPLES_DATASET # Limit for faster evaluation, or None for full
         )
         if "test" not in dataset_dict or len(dataset_dict["test"]) == 0:
             print("Test data not found or is empty. Aborting evaluation.")
