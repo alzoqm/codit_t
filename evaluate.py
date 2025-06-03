@@ -2,15 +2,14 @@ import pandas as pd
 import time
 import torch
 from datetime import datetime
-import os # For checking PAPAGO env vars, though they won't be used
 
 from src.config import (
     BASE_MODEL_ID,
     HF_MODEL_ID,
     HF_HUB_TOKEN_READ,
-    PAPAGO_CLIENT_ID,       # Will be checked but not used for API calls
-    PAPAGO_CLIENT_SECRET,   # Will be checked but not used for API calls
-    MAX_SAMPLES_DATASET 
+    PAPAGO_CLIENT_ID,
+    PAPAGO_CLIENT_SECRET,
+    MAX_SAMPLES_DATASET # To limit test data size if needed for quick eval
 )
 from src.data_load import load_pre_split_data
 from src.translation_utils import (
@@ -18,7 +17,7 @@ from src.translation_utils import (
     translate_texts_hf,
     get_onnx_model_and_tokenizer,
     translate_texts_onnx,
-    translate_texts_papago, # Papago function commented out
+    translate_texts_papago,
     calculate_bleu,
     measure_translation_speed
 )
@@ -30,18 +29,22 @@ def evaluate_models():
     # --- 1. Load Test Data ---
     print("\n--- Loading Test Data ---")
     try:
+        # MAX_SAMPLES_DATASET from config will be used for max_samples_per_split
+        # We only need the 'test' split here.
         dataset_dict = load_pre_split_data(
-            train_path=None, 
-            valid_path=None, 
-            max_samples_per_split=MAX_SAMPLES_DATASET or 100 
+            train_path=None, # Don't load train
+            valid_path=None, # Don't load valid
+            max_samples_per_split=MAX_SAMPLES_DATASET or 100 # Limit for faster evaluation, or None for full
         )
         if "test" not in dataset_dict or len(dataset_dict["test"]) == 0:
             print("Test data not found or is empty. Aborting evaluation.")
             return
         test_data = dataset_dict["test"]
         ko_texts = [item["ko"] for item in test_data]
-        en_references = [[item["en"]] for item in test_data] 
+        en_references = [[item["en"]] for item in test_data] # sacrebleu expects list of lists
         
+        # For speed test, use a subset or the full loaded test data
+        # Let's define a number of samples for speed test, e.g., min(100, len(ko_texts))
         num_samples_for_speed_test = min(100, len(ko_texts))
         speed_test_ko_texts = ko_texts[:num_samples_for_speed_test]
         
@@ -56,8 +59,7 @@ def evaluate_models():
 
     results = []
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # ONNX provider selection: Use CUDAExecutionProvider if PyTorch is on CUDA AND HF_MODEL_ID is set (implying ONNX model is from our pipeline)
-    onnx_provider = "CUDAExecutionProvider" if device == "cuda" and HF_MODEL_ID else "CPUExecutionProvider"
+    onnx_provider = "CUDAExecutionProvider" if device == "cuda" and HF_MODEL_ID else "CPUExecutionProvider" # ONNX on GPU only if main models are on GPU
     
     # --- 2. Evaluate Base Model (Pre-finetuning) ---
     print(f"\n--- Evaluating Base Model: {BASE_MODEL_ID} ---")
@@ -79,27 +81,23 @@ def evaluate_models():
             "Model": "Base (Pre-Finetuning)",
             "ID": BASE_MODEL_ID,
             "BLEU": f"{base_bleu:.4f}",
-            "Speed Test Total Time (s)": f"{avg_total_time:.4f}",
-            "Speed Test Time/Text (s)": f"{avg_time_per_text:.6f}",
-            "Speed Test Num Samples": len(speed_test_ko_texts),
-            "Device/Provider": device
+            f"Avg Speed ({len(speed_test_ko_texts)} texts)": f"{avg_total_time:.4f}s total, {avg_time_per_text:.6f}s/text",
+            "Device": device
         })
         del base_model, base_tokenizer
         if device == "cuda": torch.cuda.empty_cache()
     except Exception as e:
         print(f"Error evaluating base model: {e}")
-        results.append({"Model": "Base (Pre-Finetuning)", "ID": BASE_MODEL_ID, "BLEU": "Error", 
-                        "Speed Test Total Time (s)": "Error", "Speed Test Time/Text (s)": "Error",
-                        "Speed Test Num Samples": len(speed_test_ko_texts), "Device/Provider": device})
+        results.append({"Model": "Base (Pre-Finetuning)", "ID": BASE_MODEL_ID, "BLEU": "Error", "Avg Speed": "Error", "Device": device})
         import traceback
         traceback.print_exc()
 
     # --- 3. Evaluate Fine-tuned Model (Merged) ---
     print(f"\n--- Evaluating Fine-tuned Merged Model: {HF_MODEL_ID}/merged ---")
     if HF_MODEL_ID:
-        ft_merged_id_for_display = f"{HF_MODEL_ID}/merged"
+        ft_merged_model_id = f"{HF_MODEL_ID}/merged"
         try:
-            ft_model, ft_tokenizer = get_hf_model_and_tokenizer(ft_merged_id_for_display, token=HF_HUB_TOKEN_READ, device=device)
+            ft_model, ft_tokenizer = get_hf_model_and_tokenizer(ft_merged_model_id, token=HF_HUB_TOKEN_READ, device=device)
             
             start_trans = time.time()
             ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=16, device=device)
@@ -114,37 +112,30 @@ def evaluate_models():
             )
             results.append({
                 "Model": "Fine-tuned (Merged)",
-                "ID": ft_merged_id_for_display,
+                "ID": ft_merged_model_id,
                 "BLEU": f"{ft_bleu:.4f}",
-                "Speed Test Total Time (s)": f"{avg_total_time_ft:.4f}",
-                "Speed Test Time/Text (s)": f"{avg_time_per_text_ft:.6f}",
-                "Speed Test Num Samples": len(speed_test_ko_texts),
-                "Device/Provider": device
+                f"Avg Speed ({len(speed_test_ko_texts)} texts)": f"{avg_total_time_ft:.4f}s total, {avg_time_per_text_ft:.6f}s/text",
+                "Device": device
             })
             del ft_model, ft_tokenizer
             if device == "cuda": torch.cuda.empty_cache()
         except Exception as e:
-            print(f"Error evaluating fine-tuned merged model ({ft_merged_id_for_display}): {e}")
-            results.append({"Model": "Fine-tuned (Merged)", "ID": ft_merged_id_for_display, "BLEU": "Error", 
-                            "Speed Test Total Time (s)": "Error", "Speed Test Time/Text (s)": "Error",
-                            "Speed Test Num Samples": len(speed_test_ko_texts), "Device/Provider": device})
+            print(f"Error evaluating fine-tuned merged model ({ft_merged_model_id}): {e}")
+            results.append({"Model": "Fine-tuned (Merged)", "ID": ft_merged_model_id, "BLEU": "Error", "Avg Speed": "Error", "Device": device})
             import traceback
             traceback.print_exc()
     else:
         print("HF_MODEL_ID not set. Skipping fine-tuned merged model evaluation.")
-        results.append({"Model": "Fine-tuned (Merged)", "ID": "N/A", "BLEU": "Skipped", 
-                        "Speed Test Total Time (s)": "Skipped", "Speed Test Time/Text (s)": "Skipped",
-                        "Speed Test Num Samples": 0, "Device/Provider": "N/A"})
+        results.append({"Model": "Fine-tuned (Merged)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
 
     # --- 4. Evaluate ONNX Model ---
     print(f"\n--- Evaluating ONNX Model: {HF_MODEL_ID}/onnx_merged ---")
     if HF_MODEL_ID:
         onnx_model_subfolder = "onnx_merged"
-        onnx_id_for_display = f"{HF_MODEL_ID}/{onnx_model_subfolder}"
         try:
             onnx_model, onnx_tokenizer = get_onnx_model_and_tokenizer(
-                HF_MODEL_ID, 
-                onnx_model_subfolder, 
+                HF_MODEL_ID, # repo_id
+                onnx_model_subfolder, # subfolder
                 token=HF_HUB_TOKEN_READ,
                 provider=onnx_provider
             )
@@ -162,26 +153,21 @@ def evaluate_models():
             )
             results.append({
                 "Model": "Fine-tuned (ONNX)",
-                "ID": onnx_id_for_display,
+                "ID": f"{HF_MODEL_ID}/{onnx_model_subfolder}",
                 "BLEU": f"{onnx_bleu:.4f}",
-                "Speed Test Total Time (s)": f"{avg_total_time_onnx:.4f}",
-                "Speed Test Time/Text (s)": f"{avg_time_per_text_onnx:.6f}",
-                "Speed Test Num Samples": len(speed_test_ko_texts),
-                "Device/Provider": onnx_provider 
+                f"Avg Speed ({len(speed_test_ko_texts)} texts)": f"{avg_total_time_onnx:.4f}s total, {avg_time_per_text_onnx:.6f}s/text",
+                "Device": onnx_provider # e.g. CPUExecutionProvider or CUDAExecutionProvider
             })
             del onnx_model, onnx_tokenizer
+            # No specific torch cache clear for ONNX models typically
         except Exception as e:
-            print(f"Error evaluating ONNX model ({onnx_id_for_display}): {e}")
-            results.append({"Model": "Fine-tuned (ONNX)", "ID": onnx_id_for_display, "BLEU": "Error", 
-                            "Speed Test Total Time (s)": "Error", "Speed Test Time/Text (s)": "Error",
-                            "Speed Test Num Samples": len(speed_test_ko_texts), "Device/Provider": onnx_provider})
+            print(f"Error evaluating ONNX model ({HF_MODEL_ID}/{onnx_model_subfolder}): {e}")
+            results.append({"Model": "Fine-tuned (ONNX)", "ID": f"{HF_MODEL_ID}/{onnx_model_subfolder}", "BLEU": "Error", "Avg Speed": "Error", "Device": onnx_provider})
             import traceback
             traceback.print_exc()
     else:
         print("HF_MODEL_ID not set. Skipping ONNX model evaluation.")
-        results.append({"Model": "Fine-tuned (ONNX)", "ID": "N/A", "BLEU": "Skipped", 
-                        "Speed Test Total Time (s)": "Skipped", "Speed Test Time/Text (s)": "Skipped",
-                        "Speed Test Num Samples": 0, "Device/Provider": "N/A"})
+        results.append({"Model": "Fine-tuned (ONNX)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
 
     # # --- 5. Evaluate Papago API ---
     # print("\n--- Evaluating Papago API ---")
@@ -223,30 +209,14 @@ def evaluate_models():
     # --- 6. Display Results ---
     print("\n\n--- Overall Evaluation Summary ---")
     results_df = pd.DataFrame(results)
-    # Ensure specific column order for better readability
-    column_order = [
-        "Model", "ID", "BLEU", 
-        "Speed Test Total Time (s)", "Speed Test Time/Text (s)", 
-        "Speed Test Num Samples", "Device/Provider"
-    ]
-    # Filter out columns that might not exist if all evaluations failed for a type
-    columns_to_display = [col for col in column_order if col in results_df.columns]
-    
-    if not results_df.empty:
-        print(results_df[columns_to_display].to_string())
-    else:
-        print("No results to display.")
-
+    print(results_df.to_string())
 
     # Save results to a file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_filename = f"evaluation_results_{timestamp}.csv"
     try:
-        if not results_df.empty:
-            results_df.to_csv(results_filename, index=False, columns=columns_to_display)
-            print(f"\nEvaluation results saved to {results_filename}")
-        else:
-            print("\nNo results to save to CSV as the DataFrame is empty.")
+        results_df.to_csv(results_filename, index=False)
+        print(f"\nEvaluation results saved to {results_filename}")
     except Exception as e:
         print(f"Error saving results to CSV: {e}")
 
@@ -254,4 +224,7 @@ def evaluate_models():
     print(f"\nTotal evaluation script time: {(end_time_eval - start_time_eval)/60:.2f} minutes.")
 
 if __name__ == "__main__":
+    # Ensure .env is loaded (src.config does this, but good to be aware)
+    # Ensure you are logged in to Hugging Face CLI if HF_HUB_TOKEN_READ is for a private/gated model.
+    # `huggingface-cli login`
     evaluate_models()

@@ -2,15 +2,12 @@ import time
 import requests
 import json
 import torch
-import os
-
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from peft import PeftModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
 from sacrebleu.metrics import BLEU
 from datasets import Dataset
 from tqdm import tqdm
-from huggingface_hub import snapshot_download # Explicit import
 
 from src.config import (
     BASE_MODEL_ID,
@@ -22,76 +19,42 @@ from src.config import (
 
 # --- Hugging Face Model Translation ---
 
-def get_hf_model_and_tokenizer(model_id_or_path, tokenizer_id_or_path=None, token=None, is_peft_adapter=False, adapter_subfolder_for_peft=None, device="cuda" if torch.cuda.is_available() else "cpu"):
-    """Loads a Hugging Face model and tokenizer.
-    model_id_or_path can be a repo_id or repo_id/subfolder.
-    tokenizer_id_or_path similarly.
-    adapter_subfolder_for_peft is specifically for PEFT adapters if is_peft_adapter=True.
-    """
-    
-    def _parse_hf_path(path_str):
-        if not path_str: return None, None
-        parts = path_str.split('/')
-        # Heuristic: if more than 2 parts and last part doesn't look like a file extension, assume it's a subfolder structure.
-        # e.g., "org/repo/subfolder" -> ("org/repo", "subfolder")
-        # e.g., "org/repo" -> ("org/repo", None)
-        if len(parts) > 2 and '.' not in parts[-1]: 
-            repo_id = f"{parts[0]}/{parts[1]}"
-            subfolder = "/".join(parts[2:])
-            print(f"Parsed '{path_str}' into repo_id='{repo_id}', subfolder='{subfolder}'")
-            return repo_id, subfolder
-        print(f"Parsed '{path_str}' as repo_id='{path_str}', subfolder=None")
-        return path_str, None # Assumed to be a repo_id directly, or a local path
-
-    model_repo_id_parsed, model_subfolder_parsed = _parse_hf_path(model_id_or_path)
-
+def get_hf_model_and_tokenizer(model_id_or_path, tokenizer_id_or_path=None, token=None, is_peft_adapter=False, adapter_subfolder=None, device="cuda" if torch.cuda.is_available() else "cpu"):
+    """Loads a Hugging Face model and tokenizer."""
     if tokenizer_id_or_path is None:
-        tokenizer_repo_id_parsed, tokenizer_subfolder_parsed = model_repo_id_parsed, model_subfolder_parsed
-    else:
-        tokenizer_repo_id_parsed, tokenizer_subfolder_parsed = _parse_hf_path(tokenizer_id_or_path)
+        tokenizer_id_or_path = model_id_or_path
 
-    print(f"Loading tokenizer from repo: {tokenizer_repo_id_parsed}, subfolder: {tokenizer_subfolder_parsed if tokenizer_subfolder_parsed else 'root'}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_repo_id_parsed,
-        subfolder=tokenizer_subfolder_parsed,
-        token=token
-    )
+    print(f"Loading tokenizer from: {tokenizer_id_or_path}")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id_or_path, token=token)
 
-    print(f"Loading model from repo: {model_repo_id_parsed}, subfolder: {model_subfolder_parsed if model_subfolder_parsed else 'root'}")
+    print(f"Loading model from: {model_id_or_path}")
     if is_peft_adapter:
-        # When is_peft_adapter is True, model_repo_id_parsed should be the repo containing the adapter weights.
-        # BASE_MODEL_ID is used for the underlying base model.
+        # Load base model first
         base_model_for_peft = AutoModelForSeq2SeqLM.from_pretrained(
-            BASE_MODEL_ID, 
+            BASE_MODEL_ID, # Base model for PEFT
             token=token,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float16, # Using float16 for inference if possible
             low_cpu_mem_usage=True
         ).to(device)
-        
-        final_adapter_subfolder = adapter_subfolder_for_peft if adapter_subfolder_for_peft else model_subfolder_parsed
-        
-        print(f"Loading PEFT adapter from base model {BASE_MODEL_ID}, adapter repo: {model_repo_id_parsed}, adapter subfolder: {final_adapter_subfolder}")
+        print(f"Loading PEFT adapter from: {model_id_or_path}, subfolder: {adapter_subfolder}")
         model = PeftModel.from_pretrained(
             base_model_for_peft,
-            model_repo_id_parsed, # This is the HF_MODEL_ID where adapters are stored
-            subfolder=final_adapter_subfolder,
+            model_id_or_path, # This should be HF_MODEL_ID
+            subfolder=adapter_subfolder, # e.g., "peft_lora"
             token=token
         ).to(device)
-        print("Merging PEFT adapter...")
-        model = model.merge_and_unload() 
+        model = model.merge_and_unload() # Merge for faster inference, optional if you want to keep adapters separate
         print("PEFT model loaded and merged.")
     else:
-        # This branch is used for loading full models (base or merged fine-tuned)
         model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_repo_id_parsed,
-            subfolder=model_subfolder_parsed,
+            model_id_or_path,
             token=token,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True
         ).to(device)
-        print("Standard (non-PEFT) model loaded.")
+        print("Standard model loaded.")
     
-    model.eval() 
+    model.eval() # Set to evaluation mode
     return model, tokenizer
 
 def translate_texts_hf(texts, model, tokenizer, batch_size=16, max_length=128, device="cuda" if torch.cuda.is_available() else "cpu"):
@@ -109,83 +72,43 @@ def translate_texts_hf(texts, model, tokenizer, batch_size=16, max_length=128, d
 
 # --- ONNX Model Translation ---
 
-def get_onnx_model_and_tokenizer(model_repo_id, onnx_model_subfolder, tokenizer_repo_id_for_onnx=None, token=None, provider="CPUExecutionProvider"):
-    """Loads an ONNX model and tokenizer from Hugging Face Hub.
-    model_repo_id: The main repository ID (e.g., "alzoqm/test_model_2").
-    onnx_model_subfolder: The subfolder within model_repo_id where ONNX files are (e.g., "onnx_merged").
-    tokenizer_repo_id_for_onnx: Optional, if tokenizer is in a different repo. Defaults to model_repo_id.
-    """
+def get_onnx_model_and_tokenizer(model_repo_id, model_subfolder, tokenizer_repo_id=None, token=None, provider="CPUExecutionProvider"):
+    """Loads an ONNX model and tokenizer from Hugging Face Hub."""
+    model_path = f"{model_repo_id}/{model_subfolder}" # e.g., "alzoqm/test_model_2/onnx_merged"
+    if tokenizer_repo_id is None:
+        tokenizer_repo_id = model_repo_id # Assume tokenizer is in the root of the model repo or same as ONNX folder
     
-    actual_tokenizer_repo_id = tokenizer_repo_id_for_onnx if tokenizer_repo_id_for_onnx else model_repo_id
-    tokenizer = None
-
-    # Attempt 1: Load tokenizer from the ONNX model's specific subfolder (best case if packaged together)
-    print(f"Attempting to load ONNX tokenizer from: repo='{actual_tokenizer_repo_id}', subfolder='{onnx_model_subfolder}'")
+    print(f"Loading ONNX tokenizer from: {tokenizer_repo_id} (potentially from subfolder: {model_subfolder})")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_repo_id, subfolder=onnx_model_subfolder, token=token)
-        print(f"Loaded tokenizer from ONNX location: repo='{actual_tokenizer_repo_id}', subfolder='{onnx_model_subfolder}'")
-    except Exception as e1:
-        print(f"Tokenizer not found in ONNX location (repo='{actual_tokenizer_repo_id}', subfolder='{onnx_model_subfolder}'). Error: {type(e1).__name__} - {e1}")
-        
-        # Attempt 2: Fallback to 'merged' subfolder in the same repo (common for ONNX built from merged)
-        print(f"Attempting fallback for tokenizer: repo='{actual_tokenizer_repo_id}', subfolder='merged'")
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_repo_id, subfolder="merged", token=token)
-            print(f"Loaded tokenizer from 'merged' subfolder: repo='{actual_tokenizer_repo_id}', subfolder='merged'")
-        except Exception as e2:
-            print(f"Tokenizer not found in 'merged' subfolder (repo='{actual_tokenizer_repo_id}'). Error: {type(e2).__name__} - {e2}")
-            
-            # Attempt 3: Fallback to the root of the tokenizer repo
-            print(f"Attempting fallback for tokenizer: repo='{actual_tokenizer_repo_id}' (root)")
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(actual_tokenizer_repo_id, token=token)
-                print(f"Loaded tokenizer from repo root: '{actual_tokenizer_repo_id}'")
-            except Exception as e3:
-                print(f"Tokenizer not found in repo root '{actual_tokenizer_repo_id}'. Error: {type(e3).__name__} - {e3}.")
-                
-                # Attempt 4: Final fallback to BASE_MODEL_ID for tokenizer
-                print(f"Attempting final fallback for tokenizer: BASE_MODEL_ID='{BASE_MODEL_ID}'")
-                try:
-                    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=token)
-                    print(f"Loaded tokenizer from BASE_MODEL_ID: {BASE_MODEL_ID}")
-                except Exception as e4:
-                    print(f"CRITICAL: Failed to load any tokenizer, including BASE_MODEL_ID. Error: {type(e4).__name__} - {e4}")
-                    raise  # Re-raise the last error if all attempts fail
+        # Try loading tokenizer from the specific ONNX subfolder first
+        tokenizer = AutoTokenizer.from_pretrained(f"{model_repo_id}/{model_subfolder}", token=token)
+        print(f"Loaded tokenizer from ONNX subfolder: {model_repo_id}/{model_subfolder}")
+    except Exception:
+        print(f"Tokenizer not found in {model_repo_id}/{model_subfolder}, trying base {tokenizer_repo_id}")
+        # Fallback to the tokenizer from the base model or merged model path if not in ONNX folder
+        # Typically, the tokenizer for onnx_merged should be co-located or same as merged.
+        tokenizer = AutoTokenizer.from_pretrained(f"{model_repo_id}/merged", token=token) # Try merged folder
+        if not tokenizer: # Fallback to base model tokenizer if still not found
+             tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=token)
+        print(f"Loaded tokenizer from: {tokenizer.name_or_path}")
 
-    if tokenizer is None: # Should not happen if the last try-except re-raises
-        raise RuntimeError("Failed to load tokenizer after multiple attempts.")
 
-    print(f"Downloading ONNX model files from repo: {model_repo_id}, target subfolder: '{onnx_model_subfolder}' ...")
+    print(f"Loading ONNX model from Hugging Face Hub: {model_path} using provider: {provider}")
+    # ORTModelForSeq2SeqLM.from_pretrained expects the model name and optionally config for the tokenizer
+    # It will download the specified subfolder if the main repo_id is given and subfolder has model files.
+    # Or directly point to the hub path if supported (less common, usually downloads to cache then loads)
+
+    # Forcing download from a subfolder:
+    from huggingface_hub import snapshot_download
+    local_onnx_model_dir = snapshot_download(repo_id=model_repo_id, allow_patterns=[f"{model_subfolder}/*"], token=token, repo_type="model")
     
-    # snapshot_download will download files matching the pattern from the repo.
-    # The returned path is the root of the local cache for that specific repo snapshot.
-    local_repo_snapshot_dir = snapshot_download(
-        repo_id=model_repo_id, 
-        allow_patterns=[f"{onnx_model_subfolder}/*", f"{onnx_model_subfolder}/*/*"], # Files in subfolder and its subdirectories
-        token=token, 
-        repo_type="model",
-        # cache_dir= # Optionally specify cache_dir
-    )
-    
-    # The actual ONNX model files should be in a directory named `onnx_model_subfolder` within `local_repo_snapshot_dir`.
-    model_load_path = os.path.join(local_repo_snapshot_dir, onnx_model_subfolder)
+    model_load_path = f"{local_onnx_model_dir}/{model_subfolder}"
 
-    if not os.path.exists(model_load_path) or not os.listdir(model_load_path):
-        print(f"ERROR: ONNX model files not found at expected local path: {model_load_path}")
-        print(f"Contents of downloaded snapshot root ({local_repo_snapshot_dir}): {os.listdir(local_repo_snapshot_dir)}")
-        # This might happen if onnx_model_subfolder was empty or patterns didn't match.
-        # Or if the subfolder structure is different than expected.
-        # Example: if HF repo has "model.onnx" inside "my_onnx_models", 
-        # onnx_model_subfolder="my_onnx_models", allow_patterns=["my_onnx_models/*"]
-        # then model_load_path = local_snapshot_dir + "/my_onnx_models/"
-        raise FileNotFoundError(f"ONNX model directory not found or empty at {model_load_path} after snapshot_download.")
-
-    print(f"Loading ONNX model from local path: {model_load_path} using provider: {provider}")
+    print(f"Loading ONNX model from local snapshot: {model_load_path}")
     model = ORTModelForSeq2SeqLM.from_pretrained(
-        model_load_path, # This must be a directory containing model.onnx and config.json etc.
+        model_load_path, # Path to the directory containing onnx files and config
         provider=provider,
-        # tokenizer=tokenizer, # Pass loaded tokenizer if optimum version needs it, usually it reads from config/files
-        # use_io_binding=False, # Default is True for CUDA/ROCm, False for CPU. Set False if issues.
+        # The tokenizer_name_or_path is usually derived if config.json is present
     )
     print("ONNX model loaded.")
     model.eval()
