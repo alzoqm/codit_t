@@ -206,7 +206,7 @@ def train():
         LOCAL_MERGED_MODEL_PATH = os.path.join(OUTPUT_DIR, "merged_model_artifacts")
         print(f"Saving merged model locally to: {LOCAL_MERGED_MODEL_PATH}")
         os.makedirs(LOCAL_MERGED_MODEL_PATH, exist_ok=True)
-        merged_model.save_pretrained(LOCAL_MERGED_MODEL_PATH)
+        merged_model.save_pretrained(LOCAL_MERGED_MODEL_PATH, use_safetensors=False)
         tokenizer.save_pretrained(LOCAL_MERGED_MODEL_PATH) # Save tokenizer with merged model
         print("Merged model and tokenizer saved locally.")
 

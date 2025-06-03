@@ -103,7 +103,6 @@ def get_hf_model_and_tokenizer(
             "torch_dtype": torch.float16,
             "low_cpu_mem_usage": True,
             "device_map": {"": device},
-            "from_tf": True
         }
         if model_subfolder:
             model_load_kwargs["subfolder"] = model_subfolder
