@@ -4,12 +4,14 @@ import time
 import requests
 import json
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, PeftModel
+import os # For os.path.join
+
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from peft import PeftModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
 from sacrebleu.metrics import BLEU
 from datasets import Dataset
 from tqdm import tqdm
-import os # For os.path.join
 from huggingface_hub import snapshot_download # For ONNX model download
 
 from src.config import (
