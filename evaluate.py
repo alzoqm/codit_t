@@ -67,13 +67,13 @@ def evaluate_models():
             device=pytorch_device
         )
         start_trans_base = time.time()
-        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=4, device=pytorch_device)
+        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=1, device=pytorch_device)
         time_trans_base = time.time() - start_trans_base
         base_bleu = calculate_bleu(base_translations, en_references)
         print(f"Base Model BLEU: {base_bleu:.4f}, Translation time: {time_trans_base:.2f}s")
 
         avg_total_time_b, avg_time_per_text_b = measure_translation_speed(
-            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=4
+            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=1
         )
         results.append({
             "Model": "Base (Pre-Finetuning)", "ID": BASE_MODEL_ID, "BLEU": f"{base_bleu:.4f}",
@@ -103,13 +103,13 @@ def evaluate_models():
                 device=pytorch_device
             )
             start_trans_ft = time.time()
-            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=4, device=pytorch_device)
+            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=1, device=pytorch_device)
             time_trans_ft = time.time() - start_trans_ft
             ft_bleu = calculate_bleu(ft_translations, en_references)
             print(f"Fine-tuned Merged Model BLEU: {ft_bleu:.4f}, Translation time: {time_trans_ft:.2f}s")
 
             avg_total_time_ft, avg_time_per_text_ft = measure_translation_speed(
-                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=4
+                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=1
             )
             results.append({
                 "Model": "Fine-tuned (Merged)", "ID": merged_model_display_id, "BLEU": f"{ft_bleu:.4f}",
@@ -127,43 +127,43 @@ def evaluate_models():
         results.append({"Model": "Fine-tuned (Merged)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
 
     # --- 4. Evaluate ONNX Model ---
-    onnx_model_display_id = f"{HF_MODEL_ID}/onnx_merged" if HF_MODEL_ID else "N/A"
-    print(f"\n--- Evaluating ONNX Model: {onnx_model_display_id} (Preferred Provider: {onnx_preferred_provider}) ---")
-    if HF_MODEL_ID:
-        actual_onnx_provider_in_use = "N/A" # Placeholder
-        try:
-            onnx_model, onnx_tokenizer = get_onnx_model_and_tokenizer(
-                model_repo_id=HF_MODEL_ID,        # Main repo ID
-                onnx_model_subfolder="onnx_merged", # Subfolder for ONNX model files
-                # tokenizer_base_repo_id will default to model_repo_id inside the function
-                token=HF_HUB_TOKEN_READ,
-                preferred_provider=onnx_preferred_provider
-            )
-            # Get the actual provider used by the ONNX model session if available
-            actual_onnx_provider_in_use = onnx_model.providers[0] if hasattr(onnx_model, 'providers') and onnx_model.providers else onnx_preferred_provider
+    # onnx_model_display_id = f"{HF_MODEL_ID}/onnx_merged" if HF_MODEL_ID else "N/A"
+    # print(f"\n--- Evaluating ONNX Model: {onnx_model_display_id} (Preferred Provider: {onnx_preferred_provider}) ---")
+    # if HF_MODEL_ID:
+    #     actual_onnx_provider_in_use = "N/A" # Placeholder
+    #     try:
+    #         onnx_model, onnx_tokenizer = get_onnx_model_and_tokenizer(
+    #             model_repo_id=HF_MODEL_ID,        # Main repo ID
+    #             onnx_model_subfolder="onnx_merged", # Subfolder for ONNX model files
+    #             # tokenizer_base_repo_id will default to model_repo_id inside the function
+    #             token=HF_HUB_TOKEN_READ,
+    #             preferred_provider=onnx_preferred_provider
+    #         )
+    #         # Get the actual provider used by the ONNX model session if available
+    #         actual_onnx_provider_in_use = onnx_model.providers[0] if hasattr(onnx_model, 'providers') and onnx_model.providers else onnx_preferred_provider
             
-            start_trans_onnx = time.time()
-            onnx_translations = translate_texts_onnx(ko_texts, onnx_model, onnx_tokenizer, batch_size=4)
-            time_trans_onnx = time.time() - start_trans_onnx
-            onnx_bleu = calculate_bleu(onnx_translations, en_references)
-            print(f"ONNX Model BLEU: {onnx_bleu:.4f}, Translation time: {time_trans_onnx:.2f}s (Using Provider: {actual_onnx_provider_in_use})")
+    #         start_trans_onnx = time.time()
+    #         onnx_translations = translate_texts_onnx(ko_texts, onnx_model, onnx_tokenizer, batch_size=1)
+    #         time_trans_onnx = time.time() - start_trans_onnx
+    #         onnx_bleu = calculate_bleu(onnx_translations, en_references)
+    #         print(f"ONNX Model BLEU: {onnx_bleu:.4f}, Translation time: {time_trans_onnx:.2f}s (Using Provider: {actual_onnx_provider_in_use})")
             
-            avg_total_time_onnx, avg_time_per_text_onnx = measure_translation_speed(
-                translate_texts_onnx, (onnx_model, onnx_tokenizer), speed_test_ko_texts, batch_size_override=4
-            )
-            results.append({
-                "Model": "Fine-tuned (ONNX)", "ID": onnx_model_display_id, "BLEU": f"{onnx_bleu:.4f}",
-                f"Avg Speed ({len(speed_test_ko_texts)} texts)": f"{avg_total_time_onnx:.4f}s total, {avg_time_per_text_onnx:.6f}s/text",
-                "Device": actual_onnx_provider_in_use
-            })
-            del onnx_model, onnx_tokenizer
-        except Exception as e:
-            print(f"Error evaluating ONNX model ({onnx_model_display_id}): {e}")
-            print(traceback.format_exc())
-            results.append({"Model": "Fine-tuned (ONNX)", "ID": onnx_model_display_id, "BLEU": "Error", "Avg Speed": "Error", "Device": actual_onnx_provider_in_use}) # Report actual provider if known, else preferred
-    else:
-        print("HF_MODEL_ID not set. Skipping ONNX model evaluation.")
-        results.append({"Model": "Fine-tuned (ONNX)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
+    #         avg_total_time_onnx, avg_time_per_text_onnx = measure_translation_speed(
+    #             translate_texts_onnx, (onnx_model, onnx_tokenizer), speed_test_ko_texts, batch_size_override=1
+    #         )
+    #         results.append({
+    #             "Model": "Fine-tuned (ONNX)", "ID": onnx_model_display_id, "BLEU": f"{onnx_bleu:.4f}",
+    #             f"Avg Speed ({len(speed_test_ko_texts)} texts)": f"{avg_total_time_onnx:.4f}s total, {avg_time_per_text_onnx:.6f}s/text",
+    #             "Device": actual_onnx_provider_in_use
+    #         })
+    #         del onnx_model, onnx_tokenizer
+    #     except Exception as e:
+    #         print(f"Error evaluating ONNX model ({onnx_model_display_id}): {e}")
+    #         print(traceback.format_exc())
+    #         results.append({"Model": "Fine-tuned (ONNX)", "ID": onnx_model_display_id, "BLEU": "Error", "Avg Speed": "Error", "Device": actual_onnx_provider_in_use}) # Report actual provider if known, else preferred
+    # else:
+    #     print("HF_MODEL_ID not set. Skipping ONNX model evaluation.")
+    #     results.append({"Model": "Fine-tuned (ONNX)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
 
     # # --- 5. Evaluate Papago API ---
     # print("\n--- Evaluating Papago API ---")
