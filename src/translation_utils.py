@@ -113,7 +113,7 @@ def get_hf_model_and_tokenizer(
         if model_subfolder is None:
             model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, **model_load_kwargs)
         else:
-            model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, )
+            model = AutoModelForSeq2SeqLM.from_pretrained(pretrained_model_name_or_path=repo_id, device_map=device, torch_dtype=torch.float16,)
         print("Standard model loaded.")
     
     model.eval()
