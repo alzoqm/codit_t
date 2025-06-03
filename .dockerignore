@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Virtual environment
+.venv
+env/
+venv/
+ENV/
+# If you generate requirements from a venv, exclude the venv itself
+
+# IDE and OS specific
+.idea/
+.vscode/
+.DS_Store
+
+# Local training artifacts and large data (should be on Hub)
+results/
+results_training/
+peft_lora_adapters/
+onnx_model/
+data/ 
+*.parquet # Assuming data is primarily handled via Hugging Face Datasets
+
+# Secrets and local configurations
+.env
+# local_*.log
+
+# Docker specific (if any generated during local builds)
+# docker-compose.yml # If you don't want it in the image
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Test reports / coverage
+htmlcov/
+.pytest_cache/
+.coverage
+*.csv # If evaluation_results.csv is generated locally and not needed in image
