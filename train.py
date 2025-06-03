@@ -189,15 +189,12 @@ def train():
         LOCAL_MERGED_MODEL_PATH = os.path.join(OUTPUT_DIR, "merged_model_artifacts")
         print(f"Saving merged model locally to: {LOCAL_MERGED_MODEL_PATH}")
         os.makedirs(LOCAL_MERGED_MODEL_PATH, exist_ok=True)
-        
-        # *** 수정된 부분 시작 ***
-        # pytorch_model.bin 파일 생성을 위해 safe_serialization=False 추가
+    
         merged_model.save_pretrained(
             LOCAL_MERGED_MODEL_PATH,
             safe_serialization=False
         )
-        # *** 수정된 부분 끝 ***
-        
+ 
         tokenizer.save_pretrained(LOCAL_MERGED_MODEL_PATH) # 병합된 모델과 함께 토크나이저 저장
         print("Merged model and tokenizer saved locally.")
 

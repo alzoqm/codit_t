@@ -92,16 +92,16 @@ def evaluate_models():
     print(f"\n--- Evaluating Fine-tuned Merged Model: {merged_model_display_id} ---")
     if HF_MODEL_ID:
         try:
-            ft_model, ft_tokenizer = get_hf_model_and_tokenizer(
-                repo_id=HF_MODEL_ID,          # Main repo ID
-                model_subfolder="merged",     # Subfolder for the merged model
-                # Tokenizer for merged should also be in "merged" or root of HF_MODEL_ID.
-                # translation_utils will try HF_MODEL_ID/merged first for tokenizer if tokenizer_subfolder="merged"
-                tokenizer_repo_id=HF_MODEL_ID, 
-                tokenizer_subfolder="merged",
-                token=HF_HUB_TOKEN_READ, 
-                device=pytorch_device
-            )
+            # ft_model, ft_tokenizer = get_hf_model_and_tokenizer(
+            #     repo_id=HF_MODEL_ID,          # Main repo ID
+            #     model_subfolder="merged",     # Subfolder for the merged model
+            #     # Tokenizer for merged should also be in "merged" or root of HF_MODEL_ID.
+            #     # translation_utils will try HF_MODEL_ID/merged first for tokenizer if tokenizer_subfolder="merged"
+            #     tokenizer_repo_id=HF_MODEL_ID, 
+            #     tokenizer_subfolder="merged",
+            #     token=HF_HUB_TOKEN_READ,
+            #     device=pytorch_device
+            # )
             start_trans_ft = time.time()
             ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=16, device=pytorch_device)
             time_trans_ft = time.time() - start_trans_ft
