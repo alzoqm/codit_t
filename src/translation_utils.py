@@ -3,10 +3,11 @@ import requests
 import json
 import torch
 import os
+import onnxruntime as ort
+
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig
 from peft import PeftModel
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
-from optimum.onnxruntime.utils import ONNXProvider # 수정: ONNXProvider 임포트 위치 변경 및 사용
 from sacrebleu.metrics import BLEU
 from tqdm import tqdm
 from huggingface_hub import snapshot_download
@@ -174,7 +175,7 @@ def get_onnx_model_and_tokenizer(
     if tokenizer is None:
         raise RuntimeError("Critical: Could not load tokenizer after multiple attempts.")
 
-    available_providers = ONNXProvider.get_available_providers()
+    available_providers = ort.get_available_providers()
     print(f"Available ONNX Execution Providers: {available_providers}")
     
     final_provider = preferred_provider
