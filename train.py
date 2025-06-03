@@ -6,9 +6,9 @@ from transformers import (
     Seq2SeqTrainer,
     DataCollatorForSeq2Seq
 )
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel # Added PeftModel
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from huggingface_hub import HfApi, login
-from optimum.onnxruntime import ORTModelForSeq2SeqLM
+# from optimum.onnxruntime import ORTModelForSeq2SeqLM # ONNX 사용 안함
 import os
 import shutil
 
@@ -17,7 +17,7 @@ from src.config import (
     NUM_TRAIN_EPOCHS, LEARNING_RATE, PER_DEVICE_TRAIN_BATCH_SIZE,
     PER_DEVICE_EVAL_BATCH_SIZE, OUTPUT_DIR,
     QLORA_R, QLORA_ALPHA, QLORA_DROPOUT,
-    LOCAL_ADAPTERS_PATH, LOCAL_ONNX_MODEL_PATH, MAX_SAMPLES_DATASET
+    LOCAL_ADAPTERS_PATH, MAX_SAMPLES_DATASET # LOCAL_ONNX_MODEL_PATH 제거됨
 )
 from src.data_load import load_pre_split_data
 from src.preprocess import tokenize_datasets
@@ -52,7 +52,7 @@ def train():
     model = AutoModelForSeq2SeqLM.from_pretrained(
         BASE_MODEL_ID,
         quantization_config=bnb_config,
-        device_map="auto" # 사용 가능한 GPU에 모델 자동 분배
+        device_map="auto"
     )
     print("Base model loaded.")
 
@@ -62,7 +62,7 @@ def train():
         r=QLORA_R,
         lora_alpha=QLORA_ALPHA,
         lora_dropout=QLORA_DROPOUT,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "fc1", "fc2"] # 모델의 명명된 파라미터를 확인하여 정확한 모듈 이름 사용
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
     )
 
     # 5. 모델에 PEFT 적용
@@ -76,12 +76,12 @@ def train():
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
         effective_batch_size = PER_DEVICE_TRAIN_BATCH_SIZE * max(1, num_gpus)
         steps_per_epoch = len(tokenized_datasets["train"]) // effective_batch_size
-        if steps_per_epoch == 0: # 데이터셋이 배치 크기보다 작은 경우 대비
+        if steps_per_epoch == 0:
             steps_per_epoch = 1
-        logging_steps_val = max(1, steps_per_epoch // 20 if steps_per_epoch > 20 else 1) # 에포크당 약 20회 로깅
+        logging_steps_val = max(1, steps_per_epoch // 20 if steps_per_epoch > 20 else 1)
     else:
         print("Warning: Training dataset is empty or not found. Using default steps.")
-        steps_per_epoch = 100 # 학습 데이터가 없을 경우 기본값 (발생해서는 안 됨)
+        steps_per_epoch = 100
         logging_steps_val = 5
 
     training_args = Seq2SeqTrainingArguments(
@@ -100,17 +100,14 @@ def train():
         fp16=False,
         bf16=True if bnb_config.bnb_4bit_compute_dtype == torch.bfloat16 and torch.cuda.is_bf16_supported() else False,
         remove_unused_columns=True,
-        push_to_hub=True,
-        hub_model_id=HF_MODEL_ID,
-        hub_strategy="every_save",
-        hub_token=HF_HUB_TOKEN_WRITE,
+        push_to_hub=False, # Trainer가 직접 Hub에 푸시하지 않도록 설정
         report_to="tensorboard",
     )
 
     # 7. 데이터 콜레이터
     data_collator = DataCollatorForSeq2Seq(
         tokenizer,
-        model=peft_model, # 여기에 peft_model 전달
+        model=peft_model,
         label_pad_token_id=tokenizer.pad_token_id
     )
 
@@ -130,35 +127,21 @@ def train():
         trainer.train()
         print("Fine-tuning complete.")
 
-        # 10. 최종 어댑터 저장 및 모든 것 푸시
-        print(f"Saving final PEFT adapter to local path: {LOCAL_ADAPTERS_PATH}")
-        os.makedirs(LOCAL_ADAPTERS_PATH, exist_ok=True) # 디렉터리 생성 확인
-        trainer.model.save_pretrained(LOCAL_ADAPTERS_PATH)
-        
-        print("Pushing final model (trainer might have done this) and tokenizer to Hugging Face Hub...")
-        trainer.push_to_hub(commit_message="End of training: final adapters and tokenizer")
-        
-        api = HfApi()
-        print(f"Uploading PEFT adapters from '{LOCAL_ADAPTERS_PATH}' to '{HF_MODEL_ID}/peft_lora' on the Hub...")
-        api.upload_folder(
-            folder_path=LOCAL_ADAPTERS_PATH,
-            path_in_repo="peft_lora", # 어댑터를 'peft_lora' 하위 폴더에 저장
-            repo_id=HF_MODEL_ID,
-            repo_type="model",
-            token=HF_HUB_TOKEN_WRITE,
-            commit_message="Upload PEFT adapters to peft_lora subfolder"
-        )
-        print(f"PEFT adapters uploaded to {HF_MODEL_ID}/peft_lora on the Hub.")
+        # 10. 최종 어댑터를 로컬에 임시 저장 (병합용)
+        print(f"Saving final PEFT adapter temporarily to local path: {LOCAL_ADAPTERS_PATH}")
+        os.makedirs(LOCAL_ADAPTERS_PATH, exist_ok=True)
+        trainer.model.save_pretrained(LOCAL_ADAPTERS_PATH) # 어댑터와 설정 파일 저장
+        tokenizer.save_pretrained(LOCAL_ADAPTERS_PATH) # 토크나이저도 함께 저장
+        print(f"Temporary PEFT adapter and tokenizer saved to {LOCAL_ADAPTERS_PATH}.")
+
     else:
         print("Skipping training as no training data is available.")
-        # 학습이 스킵된 경우 어댑터 병합 및 ONNX 변환을 시도하지 않도록 처리할 수 있습니다.
-        # 여기서는 간결함을 위해 바로 종료합니다.
         print("\nTraining and deployment pipeline finished (training skipped).")
         return
 
 
-    # --- LoRA 병합 및 ONNX 변환 시작 ---
-    print("\nAttempting to merge LoRA adapters and convert to ONNX...")
+    # --- LoRA 병합 시작 ---
+    print("\nAttempting to merge LoRA adapters...")
     try:
         # 11.A LoRA 어댑터 병합
         print("Loading base model for merging (this time without 4-bit quantization)...")
@@ -166,8 +149,8 @@ def train():
             BASE_MODEL_ID,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
             low_cpu_mem_usage=True,
-            device_map="auto", # 또는 메모리가 매우 부족하면 "cpu" 강제
-            token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE
+            device_map="auto",
+            token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE # 공개 모델이면 토큰 불필요할 수 있음
         )
         print(f"Base model ({BASE_MODEL_ID}) loaded for merging.")
 
@@ -175,10 +158,10 @@ def train():
         if not os.path.exists(os.path.join(LOCAL_ADAPTERS_PATH, "adapter_config.json")):
              raise FileNotFoundError(f"Adapter config not found at {LOCAL_ADAPTERS_PATH}. Cannot proceed with merging.")
 
+        # 로컬에 저장된 어댑터로부터 PeftModel 로드
         model_with_adapters = PeftModel.from_pretrained(
-            base_model_for_merging, # 새로 로드된 기본 모델
-            LOCAL_ADAPTERS_PATH,    # 저장된 어댑터 경로
-            token=HF_HUB_TOKEN_READ or HF_HUB_TOKEN_WRITE
+            base_model_for_merging,
+            LOCAL_ADAPTERS_PATH
         )
         print(f"PEFT adapters loaded from {LOCAL_ADAPTERS_PATH} onto the new base model instance.")
 
@@ -186,86 +169,66 @@ def train():
         merged_model = model_with_adapters.merge_and_unload()
         print("Adapters merged successfully.")
 
+        # 병합된 모델을 저장할 로컬 경로 (OUTPUT_DIR 내)
         LOCAL_MERGED_MODEL_PATH = os.path.join(OUTPUT_DIR, "merged_model_artifacts")
         print(f"Saving merged model locally to: {LOCAL_MERGED_MODEL_PATH}")
         os.makedirs(LOCAL_MERGED_MODEL_PATH, exist_ok=True)
     
+        # 병합된 모델과 토크나이저 저장
         merged_model.save_pretrained(
             LOCAL_MERGED_MODEL_PATH,
-            safe_serialization=False
+            safe_serialization=False # pytorch_model.bin 으로 저장 (필요에 따라 True로 변경 가능)
         )
- 
-        tokenizer.save_pretrained(LOCAL_MERGED_MODEL_PATH) # 병합된 모델과 함께 토크나이저 저장
+        # LOCAL_ADAPTERS_PATH에 저장된 토크나이저를 사용하거나, 원본 tokenizer를 다시 저장
+        # 여기서는 원본 tokenizer 객체를 다시 저장합니다.
+        tokenizer.save_pretrained(LOCAL_MERGED_MODEL_PATH)
         print("Merged model and tokenizer saved locally.")
 
         # 저장된 파일 확인 (디버깅용)
         expected_bin_file = os.path.join(LOCAL_MERGED_MODEL_PATH, "pytorch_model.bin")
-        if not os.path.exists(expected_bin_file):
-            print(f"CRITICAL WARNING: pytorch_model.bin was NOT found at {expected_bin_file} after saving.")
+        expected_safetensors_file = os.path.join(LOCAL_MERGED_MODEL_PATH, "model.safetensors")
+        
+        if not (os.path.exists(expected_bin_file) or os.path.exists(expected_safetensors_file)):
+            print(f"CRITICAL WARNING: Model file (pytorch_model.bin or model.safetensors) was NOT found at {LOCAL_MERGED_MODEL_PATH} after saving.")
             print(f"Files in {LOCAL_MERGED_MODEL_PATH}: {os.listdir(LOCAL_MERGED_MODEL_PATH)}")
         else:
-            print(f"Successfully saved {expected_bin_file}.")
+            if os.path.exists(expected_bin_file):
+                 print(f"Successfully saved {expected_bin_file}.")
+            if os.path.exists(expected_safetensors_file):
+                 print(f"Successfully saved {expected_safetensors_file}.")
 
 
-        print(f"Uploading merged model to '{HF_MODEL_ID}/merged' on the Hub...")
+        # 병합된 모델을 Hugging Face Hub의 루트에 업로드
+        api = HfApi()
+        print(f"Uploading merged model to '{HF_MODEL_ID}' (root) on the Hub...")
         api.upload_folder(
             folder_path=LOCAL_MERGED_MODEL_PATH,
-            path_in_repo="merged", # 병합된 모델을 'merged' 하위 폴더에 저장
             repo_id=HF_MODEL_ID,
             repo_type="model",
             token=HF_HUB_TOKEN_WRITE,
             commit_message="Add merged version of the fine-tuned model"
+            # path_in_repo를 지정하지 않으면 리포지토리 루트에 업로드됩니다.
         )
-        print(f"Merged model uploaded to {HF_MODEL_ID}/merged on the Hub.")
-
-        # 11.B 병합된 모델을 ONNX로 변환
-        print("\nConverting MERGED model to ONNX format...")
-        onnx_from_merged_dirname = HF_MODEL_ID.split('/')[-1] + "_onnx_from_merged"
-        onnx_model_specific_path = os.path.join(LOCAL_ONNX_MODEL_PATH, onnx_from_merged_dirname)
-        os.makedirs(onnx_model_specific_path, exist_ok=True)
-
-        print(f"Exporting merged model (from local path: {LOCAL_MERGED_MODEL_PATH}) to ONNX...")
-        # Optimum의 ORTModelForSeq2SeqLM은 저장된 모델 경로를 사용할 수 있습니다.
-        # from_pretrained는 LOCAL_MERGED_MODEL_PATH에서 pytorch_model.bin 또는 model.safetensors를 찾습니다.
-        ort_model = ORTModelForSeq2SeqLM.from_pretrained(
-            LOCAL_MERGED_MODEL_PATH, # 저장된 병합 모델 경로
-            export=True,
-            provider="CUDAExecutionProvider", # ONNX에 GPU를 사용하려면 주석 해제 및 설정
-        )
-        ort_model.save_pretrained(onnx_model_specific_path)
-        tokenizer.save_pretrained(onnx_model_specific_path) # ONNX 모델과 함께 토크나이저 파일 저장
-        print(f"ONNX model (from merged) saved locally to: {onnx_model_specific_path}")
-
-        print(f"Uploading ONNX model (from merged) to '{HF_MODEL_ID}/onnx_merged' on the Hub...")
-        api.upload_folder(
-            folder_path=onnx_model_specific_path,
-            path_in_repo="onnx_merged", # 이 ONNX 모델을 'onnx_merged' 하위 폴더에 저장
-            repo_id=HF_MODEL_ID,
-            repo_type="model",
-            token=HF_HUB_TOKEN_WRITE,
-            commit_message="Add ONNX version (from merged model)"
-        )
-        print(f"ONNX model (from merged) uploaded to {HF_MODEL_ID}/onnx_merged on the Hub.")
+        print(f"Merged model uploaded to {HF_MODEL_ID} (root) on the Hub.")
 
     except Exception as e:
-        print(f"An error occurred during model merging or ONNX conversion from merged model: {e}")
+        print(f"An error occurred during model merging or Hub upload: {e}")
         import traceback
         traceback.print_exc()
-        print("Skipping or failed during merging/ONNX conversion from merged model.")
-    # --- LoRA 병합 및 ONNX 변환 끝 ---
+        print("Skipping or failed during merging/uploading merged model.")
+    # --- LoRA 병합 끝 ---
+
+    # ONNX 변환 및 관련 업로드/저장 로직은 제거됨
 
     # 로컬 아티팩트 정리
-    if os.path.exists(LOCAL_ADAPTERS_PATH):
+    if os.path.exists(LOCAL_ADAPTERS_PATH): # 임시 어댑터 폴더 정리
         print(f"Cleaning up local PEFT adapter directory: {LOCAL_ADAPTERS_PATH}")
         shutil.rmtree(LOCAL_ADAPTERS_PATH)
     
-    # LOCAL_MERGED_MODEL_PATH는 OUTPUT_DIR 내부에 있으므로 OUTPUT_DIR과 함께 정리됩니다.
-    # LOCAL_ONNX_MODEL_PATH는 onnx_model_specific_path를 포함합니다.
-    if os.path.exists(LOCAL_ONNX_MODEL_PATH): # onnx_models 폴더 전체 삭제
-        print(f"Cleaning up local ONNX model base directory: {LOCAL_ONNX_MODEL_PATH}")
-        shutil.rmtree(LOCAL_ONNX_MODEL_PATH)
-        
-    if os.path.exists(OUTPUT_DIR): # OUTPUT_DIR은 학습 체크포인트 및 병합된 모델 아티팩트를 포함합니다.
+    # LOCAL_MERGED_MODEL_PATH는 OUTPUT_DIR 내부에 있으므로 OUTPUT_DIR 정리 시 함께 삭제됨
+    # LOCAL_ONNX_MODEL_PATH 관련 정리 로직은 필요 없음
+
+    if os.path.exists(OUTPUT_DIR): # OUTPUT_DIR은 학습 체크포인트 및 임시 병합 모델 아티팩트를 포함
         print(f"Cleaning up main training output directory: {OUTPUT_DIR}")
         shutil.rmtree(OUTPUT_DIR)
 
@@ -273,16 +236,11 @@ def train():
 
 
 if __name__ == "__main__":
-    # 환경 변수 설정 확인 (스크립트 실행 전에 .env 파일 등을 통해 설정해야 함)
     if not HF_HUB_TOKEN_WRITE:
         print("Warning: HF_HUB_TOKEN_WRITE environment variable is not set. Will try to use cached token or prompt for login.")
     if not HF_MODEL_ID:
         print("Critical Error: HF_MODEL_ID environment variable must be set (e.g., 'your-username/your-model-name').")
-        exit(1) # HF_MODEL_ID는 필수입니다.
-
-    # HF_HUB_TOKEN_WRITE가 없으면 login() 함수가 대화형 로그인을 시도합니다.
-    # HF_HUB_TOKEN_READ가 없으면 일부 from_pretrained 호출 시 문제가 발생할 수 있으나,
-    # 공개 모델이거나 HF_HUB_TOKEN_WRITE 토큰에 읽기 권한도 있으면 괜찮을 수 있습니다.
+        exit(1)
 
     print(f"Configuration for training:")
     print(f"  BASE_MODEL_ID: {BASE_MODEL_ID}")
@@ -295,10 +253,9 @@ if __name__ == "__main__":
         print(f"  torch.cuda.device_count(): {torch.cuda.device_count()}")
         print(f"  torch.cuda.is_bf16_supported(): {torch.cuda.is_bf16_supported()}")
 
-
     try:
         train()
-    except ValueError as ve: # 설정 오류 등을 명확히 처리
+    except ValueError as ve:
         print(f"Configuration or Value Error: {ve}")
         import traceback
         traceback.print_exc()
