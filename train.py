@@ -230,7 +230,7 @@ def train():
         ort_model = ORTModelForSeq2SeqLM.from_pretrained(
             LOCAL_MERGED_MODEL_PATH, # 저장된 병합 모델 경로
             export=True,
-            # provider="CUDAExecutionProvider", # ONNX에 GPU를 사용하려면 주석 해제 및 설정
+            provider="CUDAExecutionProvider", # ONNX에 GPU를 사용하려면 주석 해제 및 설정
         )
         ort_model.save_pretrained(onnx_model_specific_path)
         tokenizer.save_pretrained(onnx_model_specific_path) # ONNX 모델과 함께 토크나이저 파일 저장
