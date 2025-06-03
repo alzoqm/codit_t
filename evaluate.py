@@ -67,13 +67,13 @@ def evaluate_models():
             device=pytorch_device
         )
         start_trans_base = time.time()
-        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=1, device=pytorch_device)
+        base_translations = translate_texts_hf(ko_texts, base_model, base_tokenizer, batch_size=16, device=pytorch_device)
         time_trans_base = time.time() - start_trans_base
         base_bleu = calculate_bleu(base_translations, en_references)
         print(f"Base Model BLEU: {base_bleu:.4f}, Translation time: {time_trans_base:.2f}s")
 
         avg_total_time_b, avg_time_per_text_b = measure_translation_speed(
-            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=1
+            translate_texts_hf, (base_model, base_tokenizer), speed_test_ko_texts, batch_size_override=16
         )
         results.append({
             "Model": "Base (Pre-Finetuning)", "ID": BASE_MODEL_ID, "BLEU": f"{base_bleu:.4f}",
@@ -103,13 +103,13 @@ def evaluate_models():
                 device=pytorch_device
             )
             start_trans_ft = time.time()
-            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=1, device=pytorch_device)
+            ft_translations = translate_texts_hf(ko_texts, ft_model, ft_tokenizer, batch_size=16, device=pytorch_device)
             time_trans_ft = time.time() - start_trans_ft
             ft_bleu = calculate_bleu(ft_translations, en_references)
             print(f"Fine-tuned Merged Model BLEU: {ft_bleu:.4f}, Translation time: {time_trans_ft:.2f}s")
 
             avg_total_time_ft, avg_time_per_text_ft = measure_translation_speed(
-                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=1
+                translate_texts_hf, (ft_model, ft_tokenizer), speed_test_ko_texts, batch_size_override=16
             )
             results.append({
                 "Model": "Fine-tuned (Merged)", "ID": merged_model_display_id, "BLEU": f"{ft_bleu:.4f}",
