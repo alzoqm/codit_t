@@ -169,42 +169,42 @@ def evaluate_models():
         print("HF_MODEL_ID not set. Skipping ONNX model evaluation.")
         results.append({"Model": "Fine-tuned (ONNX)", "ID": "N/A", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "N/A"})
 
-    # --- 5. Evaluate Papago API ---
-    print("\n--- Evaluating Papago API ---")
-    if PAPAGO_CLIENT_ID and PAPAGO_CLIENT_SECRET:
-        try:
-            start_trans = time.time()
-            papago_translations = translate_texts_papago(ko_texts, PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET)
-            time_trans = time.time() - start_trans
+    # # --- 5. Evaluate Papago API ---
+    # print("\n--- Evaluating Papago API ---")
+    # if PAPAGO_CLIENT_ID and PAPAGO_CLIENT_SECRET:
+    #     try:
+    #         start_trans = time.time()
+    #         papago_translations = translate_texts_papago(ko_texts, PAPAGO_CLIENT_ID, PAPAGO_CLIENT_SECRET)
+    #         time_trans = time.time() - start_trans
 
-            valid_papago_translations = [t for t in papago_translations if not t.startswith("[Papago Error")]
-            papago_bleu = 0.0
-            if len(valid_papago_translations) == len(en_references): # Only calc BLEU if all succeeded
-                papago_bleu = calculate_bleu(valid_papago_translations, en_references)
-                print(f"Papago API BLEU: {papago_bleu:.4f}")
-            else:
-                print(f"Papago API: Translated {len(valid_papago_translations)}/{len(ko_texts)} successfully. BLEU score might be affected or not calculated.")
+    #         valid_papago_translations = [t for t in papago_translations if not t.startswith("[Papago Error")]
+    #         papago_bleu = 0.0
+    #         if len(valid_papago_translations) == len(en_references): # Only calc BLEU if all succeeded
+    #             papago_bleu = calculate_bleu(valid_papago_translations, en_references)
+    #             print(f"Papago API BLEU: {papago_bleu:.4f}")
+    #         else:
+    #             print(f"Papago API: Translated {len(valid_papago_translations)}/{len(ko_texts)} successfully. BLEU score might be affected or not calculated.")
 
-            print(f"Papago API Translation Time for {len(ko_texts)} texts: {time_trans:.2f}s")
+    #         print(f"Papago API Translation Time for {len(ko_texts)} texts: {time_trans:.2f}s")
 
-            avg_total_time_papago, avg_time_per_text_papago = measure_translation_speed(
-                 translate_texts_papago, None, speed_test_ko_texts[:min(20, len(speed_test_ko_texts))] # Papago speed test on smaller sample
-            )
-            results.append({
-                "Model": "Papago API",
-                "ID": "Naver Papago NMT",
-                "BLEU": f"{papago_bleu:.4f}" if papago_bleu > 0 else "N/A or Partial Error",
-                f"Avg Speed ({min(20, len(speed_test_ko_texts))} texts)": f"{avg_total_time_papago:.4f}s total, {avg_time_per_text_papago:.6f}s/text",
-                "Device": "API"
-            })
-        except Exception as e:
-            print(f"Error evaluating Papago API: {e}")
-            results.append({"Model": "Papago API", "ID": "Naver Papago NMT", "BLEU": "Error", "Avg Speed": "Error", "Device": "API"})
-            import traceback
-            traceback.print_exc()
-    else:
-        print("Papago API credentials not set. Skipping Papago API evaluation.")
-        results.append({"Model": "Papago API", "ID": "Naver Papago NMT", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "API"})
+    #         avg_total_time_papago, avg_time_per_text_papago = measure_translation_speed(
+    #              translate_texts_papago, None, speed_test_ko_texts[:min(20, len(speed_test_ko_texts))] # Papago speed test on smaller sample
+    #         )
+    #         results.append({
+    #             "Model": "Papago API",
+    #             "ID": "Naver Papago NMT",
+    #             "BLEU": f"{papago_bleu:.4f}" if papago_bleu > 0 else "N/A or Partial Error",
+    #             f"Avg Speed ({min(20, len(speed_test_ko_texts))} texts)": f"{avg_total_time_papago:.4f}s total, {avg_time_per_text_papago:.6f}s/text",
+    #             "Device": "API"
+    #         })
+    #     except Exception as e:
+    #         print(f"Error evaluating Papago API: {e}")
+    #         results.append({"Model": "Papago API", "ID": "Naver Papago NMT", "BLEU": "Error", "Avg Speed": "Error", "Device": "API"})
+    #         import traceback
+    #         traceback.print_exc()
+    # else:
+    #     print("Papago API credentials not set. Skipping Papago API evaluation.")
+    #     results.append({"Model": "Papago API", "ID": "Naver Papago NMT", "BLEU": "Skipped", "Avg Speed": "Skipped", "Device": "API"})
 
     # --- 6. Display Results ---
     print("\n\n--- Overall Evaluation Summary ---")
